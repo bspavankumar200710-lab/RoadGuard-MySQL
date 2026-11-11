@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0f172a" />
+      <stop offset="100%" stop-color="#0284c7" />
+    </linearGradient>
+    <linearGradient id="accent" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#38bdf8" />
+      <stop offset="100%" stop-color="#fbbf24" />
+    </linearGradient>
+  </defs>
+  <!-- Background with safe zone padding -->
+  <rect width="512" height="512" rx="112" fill="url(#bg)" />
+  
+  <!-- Outer Shield Badge -->
+  <path d="M256 64 L416 128 V256 C416 352 344 424 256 448 C168 424 96 352 96 256 V128 Z" fill="none" stroke="url(#accent)" stroke-width="20" stroke-linejoin="round" />
+  
+  <!-- Road Surface Perspective Lines -->
+  <path d="M192 380 L232 200 M320 380 L280 200" stroke="#94a3b8" stroke-width="14" stroke-linecap="round" />
+  
+  <!-- Road Center Dashed Line -->
+  <line x1="256" y1="210" x2="256" y2="250" stroke="#f8fafc" stroke-width="12" stroke-linecap="round" />
+  <line x1="256" y1="280" x2="256" y2="330" stroke="#f8fafc" stroke-width="12" stroke-linecap="round" />
+  <line x1="256" y1="360" x2="256" y2="400" stroke="#f8fafc" stroke-width="12" stroke-linecap="round" />
+
+  <!-- Road Hazard Alert Marker (Pothole / Warning Target) -->
+  <circle cx="256" cy="180" r="32" fill="#ef4444" stroke="#ffffff" stroke-width="8" />
+  <path d="M256 164 V184 M256 194 V198" stroke="#ffffff" stroke-width="6" stroke-linecap="round" />
+</svg>

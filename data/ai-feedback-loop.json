@@ -1,0 +1,10 @@
+[
+  {
+    "detectionId": "test_1",
+    "action": "confirm",
+    "hazardType": "pothole",
+    "notes": "Verified by driver",
+    "timestamp": "2026-09-27T14:49:56.000Z",
+    "simulatedGradientAdjustment": "+0.04_positive_reinforce"
+  }
+]

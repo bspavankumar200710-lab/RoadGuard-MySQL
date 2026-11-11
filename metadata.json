@@ -1,0 +1,11 @@
+{
+  "name": "RoadGuard – Real-Time Traffic & Pothole Monitor",
+  "description": "Mobile-first AI-powered road hazard detection system monitoring potholes, road cracks, and vehicle velocities with real-time GPS geotagging and live interactive Google Maps.",
+  "requestFramePermissions": [
+    "camera",
+    "geolocation"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
