@@ -140,17 +140,28 @@ export class YOLOv8DetectionService implements IAIDetectionService {
    */
   
 
+
 private configureWasmEnvironment(): void {
   if (typeof window !== 'undefined' && ort?.env?.wasm) {
     // Disable worker threads for browser compatibility
     ort.env.wasm.numThreads = 1;
 
-    // Use the standard single-thread-compatible WASM runtime
+    // Explicitly specify matching ONNX Runtime 1.31.1 files
     ort.env.wasm.wasmPaths = {
-      wasm: '/wasm/ort-wasm-simd-threaded.wasm',
+      mjs: new URL(
+        '/wasm/ort-wasm-simd-threaded.mjs',
+        window.location.href
+      ).href,
+      wasm: new URL(
+        '/wasm/ort-wasm-simd-threaded.wasm',
+        window.location.href
+      ).href,
     };
+
+    console.log('[YOLOv8Service] WASM configuration:', ort.env.wasm.wasmPaths);
   }
 }
+
 
 
 
@@ -295,6 +306,8 @@ private configureWasmEnvironment(): void {
       }
 
       const outputData = outputTensor.data as Float32Array;
+      console.log('[YOLOv8Service] Output tensor dimensions:', outputTensor.dims);
+      console.log('[YOLOv8Service] Output tensor length:', outputData.length);
 
       // 4. Output decoding and Non-Maximum Suppression (NMS)
       const detectedObjects = this.postprocess(

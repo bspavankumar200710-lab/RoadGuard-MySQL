@@ -1,4 +1,5 @@
 
+
 import express from 'express';
 import { createServer as createViteServer } from 'vite';
 import pool from './db';
@@ -288,40 +289,16 @@ app.post('/api/detect', async (req, res) => {
     cleanBase64 = cleanBase64.split('base64,')[1];
   }
 
-  // Fallback if no Gemini API key configured
+  // Gemini API unavailable — do not generate fake detections.
   if (!ai) {
-    console.warn(
-      'GEMINI_API_KEY not configured. Running fallback mock analyzer.'
-    );
+    console.error('[Gemini] GEMINI_API_KEY is not configured.');
 
-    const simulatedResult = {
-      detected: true,
-      objects: mode === 'speed' ? [
-        {
-          type: 'vehicle_speed',
-          confidence: 0.94,
-          severity: 'high',
-          description: 'Moving Scooter detected traveling at 58 km/h (Speed limit: 40 km/h)',
-          vehicleType: 'scooter',
-          estimatedSpeedKmh: 58,
-          speedLimitKmh: 40,
-          isOverSpeed: true,
-          box2d: [400, 380, 720, 580]
-        }
-      ] : [
-        {
-          type: 'pothole',
-          confidence: 0.94,
-          severity: 'high',
-          description: 'Deep road cavity / pothole detected on driving lane (Configure GEMINI_API_KEY for live AI vision)',
-          box2d: [500, 350, 750, 650]
-        }
-      ],
-      latencyMs: Date.now() - startTime,
-      modelUsed: 'mock-local-fallback'
-    };
-
-    return res.json(simulatedResult);
+    return res.status(503).json({
+      error: 'Gemini API is unavailable. Please configure GEMINI_API_KEY.',
+      detected: false,
+      objects: [],
+      modelUsed: 'gemini-unavailable',
+    });
   }
 
   try {
@@ -368,7 +345,7 @@ CRITICAL ACCURACY RULES:
 ${learnedDirectives ? `\n${learnedDirectives}` : ''}`;
 
     const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
+      model: 'gemini-3.5-flash-lite',
       contents: [
         {
           inlineData: {
@@ -429,7 +406,7 @@ ${learnedDirectives ? `\n${learnedDirectives}` : ''}`;
                   },
                   box2d: {
                     type: Type.ARRAY,
-                    description: 'Normalized bounding box [ymin, xmin, ymax, xmax] coordinates from 0 to 1000 if visible',
+                    description: 'Normalized bounding box [ymin, xmin, ymax, xmax] coordinates from 0 to 1000',
                     items: {
                       type: Type.NUMBER
                     }
@@ -529,7 +506,7 @@ ${learnedDirectives ? `\n${learnedDirectives}` : ''}`;
         : [],
 
       latencyMs,
-      modelUsed: 'gemini-3.8-flash'
+      modelUsed: 'gemini-3.5-flash-lite'
     };
 
     return res.json(result);
