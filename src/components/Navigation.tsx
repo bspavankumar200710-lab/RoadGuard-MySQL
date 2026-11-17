@@ -1,3 +1,4 @@
+
 import React from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
@@ -5,7 +6,6 @@ import {
   Camera,
   MapPin,
   History,
-  Calendar,
   Smartphone,
   X,
   ShieldCheck,
@@ -36,6 +36,7 @@ export const Navigation: React.FC<NavigationProps> = ({
       {/* Mobile Bottom Navigation Bar with Spring Active Highlight */}
       <nav className="md:hidden fixed bottom-0 inset-x-0 z-40 bg-white/95 backdrop-blur-xl border-t border-slate-200/90 shadow-2xl px-2 pt-1 pb-[calc(0.5rem+env(safe-area-inset-bottom,0px))]">
         <div className="flex items-center justify-around max-w-lg mx-auto relative">
+
           {/* Dashboard Tab */}
           <motion.button
             whileTap={{ scale: 0.92 }}
@@ -138,27 +139,6 @@ export const Navigation: React.FC<NavigationProps> = ({
             )}
           </motion.button>
 
-          {/* Schedule / Work Orders Tab */}
-          <motion.button
-            whileTap={{ scale: 0.92 }}
-            onClick={() => onTabChange('schedule')}
-            className={`flex-1 py-1 flex flex-col items-center gap-0.5 rounded-xl transition-colors relative z-10 ${
-              currentTab === 'schedule' ? 'text-blue-600 font-bold' : 'text-slate-500 hover:text-slate-800'
-            }`}
-          >
-            <div className="relative">
-              <Calendar className={`w-4 h-4 ${currentTab === 'schedule' ? 'stroke-[2.5]' : ''}`} />
-            </div>
-            <span className="text-[10px] leading-tight">Schedule</span>
-            {currentTab === 'schedule' && (
-              <motion.div
-                layoutId="activeMobileTabIndicator"
-                transition={springs.snappy}
-                className="absolute inset-0 bg-blue-50/80 rounded-xl -z-10"
-              />
-            )}
-          </motion.button>
-
           {/* Download Tab */}
           <motion.button
             whileTap={{ scale: 0.92 }}
@@ -179,6 +159,7 @@ export const Navigation: React.FC<NavigationProps> = ({
               />
             )}
           </motion.button>
+
         </div>
       </nav>
     </>
@@ -215,6 +196,7 @@ export const MobileSidebarDrawer: React.FC<MobileSidebarDrawerProps> = ({
     <AnimatePresence>
       {isOpen && (
         <div className="fixed inset-0 z-50 flex">
+
           {/* Backdrop */}
           <motion.div
             variants={modalOverlayVariants}
@@ -233,6 +215,7 @@ export const MobileSidebarDrawer: React.FC<MobileSidebarDrawerProps> = ({
             exit="exit"
             className="relative z-10 w-72 max-w-[85vw] bg-slate-900 border-r border-slate-800 shadow-2xl flex flex-col h-full text-white"
           >
+
             {/* Header */}
             <div className="p-4 border-b border-slate-800 flex items-center justify-between">
               <div className="flex items-center gap-2.5">
@@ -260,7 +243,6 @@ export const MobileSidebarDrawer: React.FC<MobileSidebarDrawerProps> = ({
                 { id: 'monitor' as const, label: 'Live Camera Monitor', icon: Camera, live: isMonitoring },
                 { id: 'map' as const, label: 'Hazard & Heatmap', icon: MapPin },
                 { id: 'history' as const, label: 'Detection History', icon: History, count: unreadCount },
-                { id: 'schedule' as const, label: 'Patrols & Work Orders', icon: Calendar },
                 { id: 'evaluation' as const, label: 'Research & Evaluation', icon: FlaskConical },
                 { id: 'download' as const, label: 'Download PWA App', icon: Smartphone },
               ].map((item) => {
@@ -304,6 +286,7 @@ export const MobileSidebarDrawer: React.FC<MobileSidebarDrawerProps> = ({
 
             {/* Footer Actions */}
             <div className="p-3 border-t border-slate-800 space-y-2 bg-slate-950/60">
+
               {onOpenAiAssistant && (
                 <button
                   onClick={() => {
@@ -342,6 +325,7 @@ export const MobileSidebarDrawer: React.FC<MobileSidebarDrawerProps> = ({
                   <span>Backend Database</span>
                 </button>
               )}
+
             </div>
           </motion.div>
         </div>
