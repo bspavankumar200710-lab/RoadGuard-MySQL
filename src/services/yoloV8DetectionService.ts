@@ -331,9 +331,12 @@ private configureWasmEnvironment(): void {
       }
 
       const outputData = outputTensor.data as Float32Array;
-      console.log('[YOLOv8Service] Output tensor dimensions:', outputTensor.dims);
+      
       console.log('[YOLOv8Service] Output tensor length:', outputData.length);
-
+      console.log(
+      '[YOLOv8Service] Actual output shape:',
+      JSON.stringify(Array.from(outputTensor.dims))
+      );
       // 4. Output decoding and Non-Maximum Suppression (NMS)
       const detectedObjects = this.postprocess(
         outputData,
