@@ -7,3 +7,13 @@ coverage/
 .env*
 !.env.example
 public/assets/aistudio/India_28eab0aa.zip
+
+# YOLO training files
+road_damage_yolo/
+road_damage_yolo.zip
+dataset_check/
+runs/
+yolov8_env/
+yolov8n.pt
+__pycache__/
+*.pyc
