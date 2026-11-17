@@ -1,4 +1,3 @@
-
 import React, { createContext, useContext, useEffect, useState } from 'react';
 
 interface User {
@@ -87,7 +86,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           credentials: 'include',
         });
 
-        if (!response.ok) {
+        const contentType = response.headers.get('content-type') || '';
+        if (!response.ok || !contentType.includes('application/json')) {
           setUser(null);
           setUserProfile(null);
           localStorage.removeItem('roadguard_authenticated_profile');
@@ -95,7 +95,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
 
         const data = await response.json();
-        const apiUser = data.user;
+        const apiUser = data?.user;
+        if (!apiUser) {
+          setUser(null);
+          setUserProfile(null);
+          return;
+        }
 
         const stored = localStorage.getItem('roadguard_authenticated_profile');
         let preferredMode: 'both' | 'potholes' | 'speed' = 'both';
@@ -164,6 +169,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }),
       });
 
+      const contentType = response.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        throw new Error('Authentication API returned an unexpected non-JSON response');
+      }
+
       const data = await response.json();
 
       if (!response.ok) {
@@ -197,6 +207,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           password: pass,
         }),
       });
+
+      const contentType = response.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        throw new Error('Registration API returned an unexpected non-JSON response');
+      }
 
       const data = await response.json();
 

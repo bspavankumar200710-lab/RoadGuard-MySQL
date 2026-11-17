@@ -6,3 +6,4 @@ coverage/
 *.log
 .env*
 !.env.example
+public/assets/aistudio/India_28eab0aa.zip

@@ -182,8 +182,9 @@ class DetectionService {
     try {
       const response = await fetch('/api/detections');
 
-      if (!response.ok) {
-        throw new Error(`Server returned ${response.status}`);
+      const contentType = response.headers.get('content-type') || '';
+      if (!response.ok || !contentType.includes('application/json')) {
+        throw new Error(`Server returned ${response.status} (${contentType || 'non-json'})`);
       }
 
       const serverRecords: RoadHazardRecord[] =

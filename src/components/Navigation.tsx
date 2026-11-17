@@ -12,10 +12,11 @@ import {
   Sparkles,
   Database,
   Zap,
+  FlaskConical,
 } from 'lucide-react';
 import { springs, modalOverlayVariants, buttonPressProps, leftDrawerVariants } from '../utils/motion';
 
-export type NavigationTab = 'dashboard' | 'monitor' | 'map' | 'history' | 'schedule' | 'download';
+export type NavigationTab = 'dashboard' | 'monitor' | 'map' | 'history' | 'schedule' | 'evaluation' | 'download';
 
 interface NavigationProps {
   currentTab: NavigationTab;
@@ -260,6 +261,7 @@ export const MobileSidebarDrawer: React.FC<MobileSidebarDrawerProps> = ({
                 { id: 'map' as const, label: 'Hazard & Heatmap', icon: MapPin },
                 { id: 'history' as const, label: 'Detection History', icon: History, count: unreadCount },
                 { id: 'schedule' as const, label: 'Patrols & Work Orders', icon: Calendar },
+                { id: 'evaluation' as const, label: 'Research & Evaluation', icon: FlaskConical },
                 { id: 'download' as const, label: 'Download PWA App', icon: Smartphone },
               ].map((item) => {
                 const Icon = item.icon;

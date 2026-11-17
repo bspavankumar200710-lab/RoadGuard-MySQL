@@ -8,6 +8,7 @@ import { MonitorPage } from './pages/MonitorPage';
 import { MapPage } from './pages/MapPage';
 import { HistoryPage } from './pages/HistoryPage';
 import { SchedulePage } from './pages/SchedulePage';
+import { EvaluationPage } from './pages/EvaluationPage';
 import { DownloadPage } from './pages/DownloadPage';
 import { DemoModeModal } from './components/DemoModeModal';
 import { UserAuthButton } from './components/UserAuthButton';
@@ -122,6 +123,8 @@ export default function App() {
         return 'Defect Records & Review';
       case 'schedule':
         return 'Municipal Work Orders & Patrols';
+      case 'evaluation':
+        return 'Research Evaluation & Baselines';
       case 'download':
         return 'Mobile App & PWA';
       default:
@@ -375,6 +378,19 @@ export default function App() {
                     detections={detections}
                     onNavigateToMap={handleNavigateToMap}
                   />
+                </motion.div>
+              )}
+
+              {currentTab === 'evaluation' && (
+                <motion.div
+                  key="evaluation"
+                  variants={pageVariants}
+                  initial="initial"
+                  animate="animate"
+                  exit="exit"
+                  className="w-full flex-1 flex flex-col bg-slate-50"
+                >
+                  <EvaluationPage />
                 </motion.div>
               )}
 

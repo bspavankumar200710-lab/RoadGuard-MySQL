@@ -13,6 +13,7 @@ import {
   Zap,
   Database,
   Radio,
+  FlaskConical,
 } from 'lucide-react';
 import { NavigationTab } from './Navigation';
 import { springs, buttonPressProps, sidebarTransition, sidebarLabelVariants } from '../utils/motion';
@@ -46,6 +47,7 @@ export const CollapsibleDesktopSidebar: React.FC<CollapsibleDesktopSidebarProps>
     { id: 'map' as const, label: 'Hazard & Heatmap', icon: MapPin },
     { id: 'history' as const, label: 'Detection History', icon: History, count: unreadCount },
     { id: 'schedule' as const, label: 'Patrols & Tasks', icon: Calendar },
+    { id: 'evaluation' as const, label: 'Research & Eval', icon: FlaskConical },
     { id: 'download' as const, label: 'Download App', icon: Smartphone },
   ];
 

@@ -417,7 +417,8 @@ export const MonitorPage: React.FC<MonitorPageProps> = ({
       setIsAnalyzingFrame(false);
 
       if (isMonitoring) {
-        captureTimerRef.current = setTimeout(captureAndAnalyzeFrame, 1400);
+        const nextDelayMs = activeDetectorId === 'gemini-vision' ? 4500 : 1400;
+        captureTimerRef.current = setTimeout(captureAndAnalyzeFrame, nextDelayMs);
       }
     }
   }, [isMonitoring, isAnalyzingFrame, gpsCoords, soundEnabled, detectionMode, activeDetectorId]);

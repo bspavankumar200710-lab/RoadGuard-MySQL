@@ -1,5 +1,3 @@
-
-
 import express from 'express';
 import { createServer as createViteServer } from 'vite';
 import pool from './db';
@@ -10,8 +8,9 @@ import { fileURLToPath } from 'url';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import cookieParser from 'cookie-parser';
+import crypto from 'crypto';
 
-dotenv.config({ override: true });
+dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -24,8 +23,25 @@ app.use(express.json({ limit: '25mb' }));
 app.use(express.urlencoded({ extended: true, limit: '25mb' }));
 app.use(cookieParser());
 
-// Serve public static assets (including ONNX models and WASM binaries)
-app.use(express.static(path.resolve(__dirname, 'public')));
+// Serve public static assets (including ONNX models and WASM binaries) with explicit MIME types
+app.use(
+  express.static(path.resolve(__dirname, 'public'), {
+    setHeaders: (res, filePath) => {
+      if (filePath.endsWith('.wasm')) {
+        res.setHeader('Content-Type', 'application/wasm');
+      } else if (filePath.endsWith('.mjs')) {
+        res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+      }
+    },
+  })
+);
+
+// Prevent SPA index.html fallback for missing WASM binaries or ONNX model weights
+app.use(['/wasm', '/models'], (req, res) => {
+  return res.status(404).json({
+    error: `Static asset not found: ${req.originalUrl}`,
+  });
+});
 
 // -------------------------------------------------------------
 // INITIALIZE GEMINI CLIENT
@@ -49,11 +65,11 @@ if (apiKey) {
 // API ENDPOINTS
 // -------------------------------------------------------------
 
-const JWT_SECRET = process.env.JWT_SECRET;
+const JWT_SECRET = process.env.JWT_SECRET || 'roadguard-dev-jwt-secret-change-in-production';
 const AUTH_COOKIE = 'roadguard_token';
 
-if (!JWT_SECRET) {
-  throw new Error('JWT_SECRET is missing from .env');
+if (!process.env.JWT_SECRET) {
+  console.warn('[AI Studio] JWT_SECRET not set — using ephemeral development secret');
 }
 
 const cookieOptions = {
@@ -261,8 +277,36 @@ app.post('/api/auth/logout', (_req, res) => {
 });
 
 // ============================================================
-// GEMINI DETECTION AI ENDPOINT
+// GEMINI DETECTION AI ENDPOINT (WITH QUOTA COOLDOWN & CACHE)
 // ============================================================
+
+let geminiCooldownUntil = 0;
+const geminiResponseCache = new Map<string, { expiresAt: number; payload: any }>();
+const GEMINI_CACHE_TTL_MS = 5 * 60 * 1000;
+const GEMINI_CACHE_MAX_ENTRIES = 60;
+
+function parseRetryDelaySeconds(err: any): number {
+  const msg = String(err?.message || '');
+  const retryMatch = msg.match(/retry in\s+([0-9.]+)s/i) || msg.match(/"retryDelay":"(\d+)s"/i);
+  if (retryMatch) {
+    const parsed = Math.ceil(Number(retryMatch[1]));
+    if (Number.isFinite(parsed) && parsed > 0 && parsed <= 120) {
+      return parsed;
+    }
+  }
+  return 35;
+}
+
+function isQuotaOrRateLimitError(err: any): boolean {
+  const status = err?.status || err?.code;
+  const msg = String(err?.message || '');
+  return (
+    status === 429 ||
+    msg.includes('"code":429') ||
+    msg.includes('RESOURCE_EXHAUSTED') ||
+    msg.includes('Quota exceeded')
+  );
+}
 
 app.post('/api/detect', async (req, res) => {
   const startTime = Date.now();
@@ -271,7 +315,8 @@ app.post('/api/detect', async (req, res) => {
     imageBase64,
     mimeType = 'image/jpeg',
     mode = 'both',
-    learnedDirectives = ''
+    learnedDirectives = '',
+    useFeedbackRules = true,
   } = req.body;
 
   if (!imageBase64) {
@@ -289,15 +334,44 @@ app.post('/api/detect', async (req, res) => {
     cleanBase64 = cleanBase64.split('base64,')[1];
   }
 
+  // Return cached identical frame result immediately without consuming quota
+  const cacheKey = crypto
+    .createHash('sha256')
+    .update(`${mode}|${Boolean(useFeedbackRules)}|${String(learnedDirectives)}|`)
+    .update(cleanBase64)
+    .digest('hex');
+
+  const cached = geminiResponseCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    return res.json({
+      ...cached.payload,
+      cached: true,
+      latencyMs: Date.now() - startTime,
+    });
+  }
+
   // Gemini API unavailable — do not generate fake detections.
   if (!ai) {
-    console.error('[Gemini] GEMINI_API_KEY is not configured.');
-
     return res.status(503).json({
       error: 'Gemini API is unavailable. Please configure GEMINI_API_KEY.',
       detected: false,
       objects: [],
       modelUsed: 'gemini-unavailable',
+    });
+  }
+
+  // If server is in a 429 quota cooldown window, short-circuit immediately instead of hammering upstream
+  const now = Date.now();
+  if (now < geminiCooldownUntil) {
+    const retryAfterSeconds = Math.max(1, Math.ceil((geminiCooldownUntil - now) / 1000));
+    res.setHeader('Retry-After', String(retryAfterSeconds));
+    return res.status(429).json({
+      error: `Gemini API rate limit cooldown active. Retry in ${retryAfterSeconds}s.`,
+      rateLimited: true,
+      retryAfterSeconds,
+      detected: false,
+      objects: [],
+      modelUsed: 'gemini-rate-limited',
     });
   }
 
@@ -335,17 +409,18 @@ Carefully inspect both:
 Provide high precision bounding boxes and descriptive details for both.`;
     }
 
+    const activeDirectives = useFeedbackRules && learnedDirectives ? `\n${learnedDirectives}` : '';
+
     const prompt = `You are a high-precision real-time road perception AI mounted on a vehicle camera.
 ${modeInstruction}
 
 CRITICAL ACCURACY RULES:
 - For potholes: tightly identify boundary coordinates [ymin, xmin, ymax, xmax] 0-1000. Specify lane position (center lane, right shoulder, wheel track).
 - For vehicles / scooters: identify vehicleType ('car', 'scooter', 'motorcycle', 'auto', 'truck', 'bus'), estimate speed in km/h, and determine if exceeding road speed limits.
-- Return structured JSON. If the roadway has no hazards or no moving vehicles as requested, return detected: false and objects: [].
-${learnedDirectives ? `\n${learnedDirectives}` : ''}`;
+- Return structured JSON. If the roadway has no hazards or no moving vehicles as requested, return detected: false and objects: [].${activeDirectives}`;
 
     const response = await ai.models.generateContent({
-      model: 'gemini-3.5-flash-lite',
+      model: 'gemini-3.1-flash-lite',
       contents: [
         {
           inlineData: {
@@ -358,6 +433,7 @@ ${learnedDirectives ? `\n${learnedDirectives}` : ''}`;
         }
       ],
       config: {
+        temperature: 0,
         responseMimeType: 'application/json',
         responseSchema: {
           type: Type.OBJECT,
@@ -506,15 +582,41 @@ ${learnedDirectives ? `\n${learnedDirectives}` : ''}`;
         : [],
 
       latencyMs,
-      modelUsed: 'gemini-3.5-flash-lite'
+      modelUsed: 'gemini-3.1-flash-lite',
+      liveApi: true,
+      usageMetadata: response.usageMetadata || null
     };
+
+    if (geminiResponseCache.size >= GEMINI_CACHE_MAX_ENTRIES) {
+      const oldestKey = geminiResponseCache.keys().next().value;
+      if (oldestKey) geminiResponseCache.delete(oldestKey);
+    }
+    geminiResponseCache.set(cacheKey, {
+      expiresAt: Date.now() + GEMINI_CACHE_TTL_MS,
+      payload: result,
+    });
 
     return res.json(result);
 
   } catch (err: any) {
-    console.error('Gemini vision API error:', err);
+    if (isQuotaOrRateLimitError(err)) {
+      const retryAfterSeconds = parseRetryDelaySeconds(err);
+      geminiCooldownUntil = Date.now() + retryAfterSeconds * 1000;
+      console.warn(`[Gemini] Quota/rate limit reached (429). Activating ${retryAfterSeconds}s server cooldown.`);
+      res.setHeader('Retry-After', String(retryAfterSeconds));
+      return res.status(429).json({
+        error: `Gemini API rate limit reached. Automatically cooling down for ${retryAfterSeconds}s.`,
+        rateLimited: true,
+        retryAfterSeconds,
+        detected: false,
+        objects: [],
+        modelUsed: 'gemini-rate-limited',
+      });
+    }
 
-    return res.status(500).json({
+    console.warn('[Gemini] Vision request warning:', err?.message || err);
+
+    return res.status(502).json({
       error: err?.message || 'Error processing road vision with Gemini',
       detected: false,
       objects: []

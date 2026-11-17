@@ -123,9 +123,10 @@ class AgentLearningService {
     try {
       const response = await fetch(API_URL);
 
-      if (!response.ok) {
+      const contentType = response.headers.get('content-type') || '';
+      if (!response.ok || !contentType.includes('application/json')) {
         throw new Error(
-          `MySQL API returned ${response.status}`
+          `MySQL API returned ${response.status} (${contentType || 'non-json'})`
         );
       }
 

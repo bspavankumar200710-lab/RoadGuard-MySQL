@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
@@ -42,7 +41,8 @@ export const DatabaseExplorerModal: React.FC<DatabaseExplorerModalProps> = ({
 
       const response = await fetch(endpoint);
 
-      if (!response.ok) {
+      const contentType = response.headers.get('content-type') || '';
+      if (!response.ok || !contentType.includes('application/json')) {
         throw new Error(`Failed to fetch ${colName}`);
       }
 
@@ -253,3 +253,4 @@ export const DatabaseExplorerModal: React.FC<DatabaseExplorerModalProps> = ({
     </AnimatePresence>
   );
 };
+
