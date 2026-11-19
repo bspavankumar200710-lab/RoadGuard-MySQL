@@ -382,10 +382,11 @@ app.post('/api/detect', async (req, res) => {
       modeInstruction = `TARGET MODE: POTHOLES & ROAD INTEGRITY ONLY.
 Carefully examine the road surface, driving lanes, shoulders, and asphalt.
 Detect:
-1. Potholes: cavities, asphalt depressions, deep crater holes, missing road surface.
+1. Potholes: EVERY individual cavity, water-filled crater puddle, asphalt depression, deep hole, missing road surface.
 2. Road cracks: longitudinal, transversal, alligator cracks, or surface fractures.
 3. Broken or damaged road signs: tilted, dented, knocked down, bent, or obstructed warning/speed/direction signs.
-Do NOT report moving vehicles if mode is potholes.`;
+Do NOT report moving vehicles if mode is potholes.
+CRITICAL POTHOLE RULE: Identify EACH and EVERY individual pothole separately with its own tight bounding box [ymin, xmin, ymax, xmax] (0-1000). Never merge multiple separate potholes or puddles into a single bounding box.`;
 
     } else if (mode === 'speed') {
       modeInstruction = `TARGET MODE: MOVING VEHICLES & SCOOTER SPEED ESTIMATION ONLY.
@@ -404,18 +405,39 @@ Do NOT report potholes in speed mode.`;
     } else {
       modeInstruction = `TARGET MODE: COMPREHENSIVE ROAD SAFETY (BOTH POTHOLES & VEHICLE SPEEDS).
 Carefully inspect both:
-1. ROAD HAZARDS: Potholes, road cavities, asphalt fractures/cracks, broken road signs.
+1. ROAD HAZARDS: Each individual pothole, puddle crater, road cavity, asphalt fractures/cracks, broken road signs.
 2. MOVING VEHICLES: Cars, scooters, motorcycles, autos traveling on the roadway with estimated speed in km/h.
 Provide high precision bounding boxes and descriptive details for both.`;
     }
 
-    const activeDirectives = useFeedbackRules && learnedDirectives ? `\n${learnedDirectives}` : '';
+    let feedbackRuleVersion = 'standard-baseline';
+    let feedbackDirectives = '';
+
+    if (useFeedbackRules) {
+      try {
+        const [rules]: any = await pool.execute(
+          "SELECT * FROM verified_feedback_rules WHERE verification_status = 'approved' ORDER BY created_at DESC"
+        );
+        if (rules && rules.length > 0) {
+          feedbackRuleVersion = rules[0].rule_set_version || 'v2.0-verified';
+          const ruleStrings = rules.map(
+            (r: any, idx: number) =>
+              `- RULE #${idx + 1} [Target: ${r.target_hazard_type}, False-Positive Cause: ${r.true_negative_class}]: ${r.canonical_constraint}`
+          );
+          feedbackDirectives = `\n\nVERIFIED FEEDBACK GATING CONSTRAINTS (Rule Set Version: ${feedbackRuleVersion}):\n${ruleStrings.join('\n')}\nCRITICAL FALSE-POSITIVE REDUCTION: Strictly adhere to these verified rules to prevent false-positive alarms while maintaining true road damage recall.`;
+        }
+      } catch (err) {
+        console.warn('[Gemini] Could not load verified feedback rules from DB:', err);
+      }
+    }
+
+    const activeDirectives = feedbackDirectives || (learnedDirectives ? `\n${learnedDirectives}` : '');
 
     const prompt = `You are a high-precision real-time road perception AI mounted on a vehicle camera.
 ${modeInstruction}
 
 CRITICAL ACCURACY RULES:
-- For potholes: tightly identify boundary coordinates [ymin, xmin, ymax, xmax] 0-1000. Specify lane position (center lane, right shoulder, wheel track).
+- For potholes: tightly identify boundary coordinates [ymin, xmin, ymax, xmax] 0-1000. Specify lane position (center lane, right shoulder, wheel track). If multiple potholes exist, detect each one separately.
 - For vehicles / scooters: identify vehicleType ('car', 'scooter', 'motorcycle', 'auto', 'truck', 'bus'), estimate speed in km/h, and determine if exceeding road speed limits.
 - Return structured JSON. If the roadway has no hazards or no moving vehicles as requested, return detected: false and objects: [].${activeDirectives}`;
 
@@ -582,7 +604,10 @@ CRITICAL ACCURACY RULES:
         : [],
 
       latencyMs,
-      modelUsed: 'gemini-3.1-flash-lite',
+      modelUsed: useFeedbackRules
+        ? `gemini-vision-feedback (${feedbackRuleVersion})`
+        : 'gemini-vision-standard',
+      feedbackRuleVersion,
       liveApi: true,
       usageMetadata: response.usageMetadata || null
     };
@@ -1105,6 +1130,201 @@ app.delete('/api/agent-learnings', async (_req, res) => {
 
     return res.status(500).json({
       error: 'Failed to reset agent learnings'
+    });
+  }
+});
+
+// ============================================================
+// VERIFIED FEEDBACK RULES & AUDIT TRAIL API
+// ============================================================
+
+// GET ALL VERIFIED RULES
+app.get('/api/feedback/rules', async (_req, res) => {
+  try {
+    const [rows]: any = await pool.execute(
+      `SELECT * FROM verified_feedback_rules ORDER BY created_at DESC`
+    );
+    return res.json(rows);
+  } catch (err: any) {
+    console.error('Error fetching verified rules:', err);
+    return res.status(500).json({ error: 'Failed to fetch verified feedback rules' });
+  }
+});
+
+// CREATE / COMPILE A NEW VERIFIED RULE
+app.post('/api/feedback/rules', async (req, res) => {
+  try {
+    const {
+      id = `rule-${Date.now()}`,
+      rule_hash,
+      rule_set_version = 'v2.0-verified',
+      source_correction_id = '',
+      target_hazard_type,
+      true_negative_class,
+      canonical_constraint,
+      confidence_penalty = 0.150,
+      suppression_threshold = 0.550,
+      verified_by = 'Faculty Reviewer Admin',
+    } = req.body;
+
+    if (!target_hazard_type || !true_negative_class || !canonical_constraint) {
+      return res.status(400).json({ error: 'Missing required rule fields' });
+    }
+
+    const computedHash = rule_hash || crypto.createHash('md5').update(canonical_constraint).digest('hex').slice(0, 16);
+    const now = new Date();
+
+    await pool.execute(
+      `INSERT INTO verified_feedback_rules (
+        id, rule_hash, rule_set_version, source_correction_id,
+        target_hazard_type, true_negative_class, canonical_constraint,
+        confidence_penalty, suppression_threshold, verification_status,
+        verified_by, verified_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'approved', ?, ?)`,
+      [
+        id,
+        computedHash,
+        rule_set_version,
+        source_correction_id,
+        target_hazard_type,
+        true_negative_class,
+        canonical_constraint,
+        confidence_penalty,
+        suppression_threshold,
+        verified_by,
+        now,
+      ]
+    );
+
+    return res.status(201).json({
+      success: true,
+      rule: {
+        id,
+        rule_hash: computedHash,
+        rule_set_version,
+        target_hazard_type,
+        true_negative_class,
+        canonical_constraint,
+        confidence_penalty,
+        suppression_threshold,
+        verification_status: 'approved',
+        verified_by,
+        verified_at: now,
+      },
+    });
+  } catch (err: any) {
+    console.error('Error creating verified feedback rule:', err);
+    return res.status(500).json({ error: 'Failed to create verified feedback rule' });
+  }
+});
+
+// VERIFY (APPROVE OR REJECT) A DETECTION / DRIVER CORRECTION
+app.post('/api/feedback/verify/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const {
+      status, // 'approved' | 'rejected'
+      verifiedBy = 'Faculty Reviewer Admin',
+      trueNegativeClass = 'shadow',
+      canonicalConstraint = 'Refined driver correction approved by reviewer',
+      confidencePenalty = 0.150,
+    } = req.body;
+
+    if (!status || !['approved', 'rejected'].includes(status)) {
+      return res.status(400).json({ error: "status must be 'approved' or 'rejected'" });
+    }
+
+    const now = new Date();
+
+    // 1. Update detection verification state in database
+    await pool.execute(
+      `UPDATE detections SET
+        verificationStatus = ?,
+        verifiedStatus = ?,
+        verifiedAt = ?,
+        verifiedBy = ?
+       WHERE id = ?`,
+      [status, status, now, verifiedBy, id]
+    );
+
+    // 2. If approved, compile into a reusable VerifiedFeedbackRule
+    let generatedRule = null;
+    if (status === 'approved' && canonicalConstraint) {
+      const ruleId = `rule-v2-${Date.now().toString(36)}`;
+      const ruleHash = crypto.createHash('md5').update(canonicalConstraint).digest('hex').slice(0, 16);
+      
+      await pool.execute(
+        `INSERT INTO verified_feedback_rules (
+          id, rule_hash, rule_set_version, source_correction_id,
+          target_hazard_type, true_negative_class, canonical_constraint,
+          confidence_penalty, suppression_threshold, verification_status,
+          verified_by, verified_at
+        ) VALUES (?, ?, 'v2.0-verified', ?, 'pothole', ?, ?, ?, 0.550, 'approved', ?, ?)`,
+        [
+          ruleId,
+          ruleHash,
+          id,
+          trueNegativeClass,
+          canonicalConstraint,
+          confidencePenalty,
+          verifiedBy,
+          now,
+        ]
+      );
+      generatedRule = { ruleId, ruleHash, trueNegativeClass, canonicalConstraint };
+    }
+
+    return res.json({
+      success: true,
+      detectionId: id,
+      verificationStatus: status,
+      verifiedBy,
+      verifiedAt: now,
+      generatedRule,
+    });
+  } catch (err: any) {
+    console.error('Error verifying feedback:', err);
+    return res.status(500).json({ error: 'Failed to process feedback verification' });
+  }
+});
+
+// DELETE / REVOKE ONE VERIFIED RULE
+app.delete('/api/feedback/rules/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    await pool.execute('DELETE FROM verified_feedback_rules WHERE id = ?', [id]);
+    return res.json({ success: true, message: `Rule ${id} revoked successfully` });
+  } catch (err: any) {
+    console.error('Error deleting verified rule:', err);
+    return res.status(500).json({ error: 'Failed to delete verified rule' });
+  }
+});
+
+// ============================================================
+// YOLOV5 PYTHON SERVICE PROXY
+// ============================================================
+app.post('/api/yolov5/detect', async (req, res) => {
+  const yoloServiceUrl = process.env.YOLO_SERVICE_URL || 'http://127.0.0.1:8000';
+  try {
+    const response = await fetch(`${yoloServiceUrl}/detect`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req.body),
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      return res.status(response.status).send(text);
+    }
+
+    const data = await response.json();
+    return res.json(data);
+  } catch (err: any) {
+    return res.status(503).json({
+      error: `YOLOv5 Python FastAPI service is offline at ${yoloServiceUrl}. Run: python yolo-service/app.py`,
+      detected: false,
+      objects: [],
+      modelUsed: 'yolov5-offline',
     });
   }
 });

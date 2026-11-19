@@ -39,6 +39,22 @@ interface AgentLearningRow {
   confidencePenalty: number;
 }
 
+interface VerifiedFeedbackRuleRow {
+  id: string;
+  rule_hash: string;
+  rule_set_version: string;
+  source_correction_id: string;
+  target_hazard_type: string;
+  true_negative_class: string;
+  canonical_constraint: string;
+  confidence_penalty: number;
+  suppression_threshold: number;
+  verification_status: string;
+  verified_by: string;
+  verified_at: string;
+  created_at: string;
+}
+
 function loadJsonSeed<T>(relativePath: string, fallback: T[]): T[] {
   try {
     const fullPath = path.resolve(__dirname, relativePath);
@@ -95,6 +111,54 @@ const agentLearningsStore: AgentLearningRow[] = [
     actualCategory: 'water_puddle',
     userNotes: 'Reflective shallow rainwater pools without broken asphalt borders must not be labeled as structural craters.',
     confidencePenalty: 0.10,
+  },
+];
+
+const verifiedRulesStore: VerifiedFeedbackRuleRow[] = [
+  {
+    id: 'rule-v2-shadow-1',
+    rule_hash: '7a9b1c2d',
+    rule_set_version: 'v2.0-verified',
+    source_correction_id: 'corr-init-shadow-01',
+    target_hazard_type: 'road_crack',
+    true_negative_class: 'shadow',
+    canonical_constraint: 'Tree branch and bridge silhouettes cast sharp dark contours with soft gradients. Verify jagged structural asphalt fracture before classifying as D00/D10/D20 cracks.',
+    confidence_penalty: 0.150,
+    suppression_threshold: 0.550,
+    verification_status: 'approved',
+    verified_by: 'Faculty Reviewer Admin',
+    verified_at: nowIso,
+    created_at: nowIso,
+  },
+  {
+    id: 'rule-v2-manhole-1',
+    rule_hash: '8f3e4d5c',
+    rule_set_version: 'v2.0-verified',
+    source_correction_id: 'corr-init-manhole-01',
+    target_hazard_type: 'pothole',
+    true_negative_class: 'manhole',
+    canonical_constraint: 'Circular or square metallic municipal sewer covers and utility caps flush with the lane plane are utility hardware, NOT structural potholes (D40).',
+    confidence_penalty: 0.180,
+    suppression_threshold: 0.550,
+    verification_status: 'approved',
+    verified_by: 'Faculty Reviewer Admin',
+    verified_at: nowIso,
+    created_at: nowIso,
+  },
+  {
+    id: 'rule-v2-puddle-1',
+    rule_hash: '9a1b2c3d',
+    rule_set_version: 'v2.0-verified',
+    source_correction_id: 'corr-init-puddle-01',
+    target_hazard_type: 'pothole',
+    true_negative_class: 'water_puddle',
+    canonical_constraint: 'Smooth reflective water pools without broken asphalt crater rims or depth contrast must not be misidentified as deep road craters.',
+    confidence_penalty: 0.120,
+    suppression_threshold: 0.550,
+    verification_status: 'approved',
+    verified_by: 'Faculty Reviewer Admin',
+    verified_at: nowIso,
+    created_at: nowIso,
   },
 ];
 
@@ -356,6 +420,57 @@ async function executeMockQuery(sql: string, params: any[] = []): Promise<[any, 
     const count = agentLearningsStore.length;
     agentLearningsStore.length = 0;
     return [{ affectedRows: count }, []];
+  }
+
+  // VERIFIED FEEDBACK RULES
+  if (upper.includes('FROM VERIFIED_FEEDBACK_RULES')) {
+    const sorted = [...verifiedRulesStore].sort(
+      (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+    );
+    return [sorted.map((r) => ({ ...r })), []];
+  }
+
+  if (upper.startsWith('INSERT INTO VERIFIED_FEEDBACK_RULES')) {
+    const [
+      id,
+      rule_hash,
+      rule_set_version,
+      source_correction_id,
+      target_hazard_type,
+      true_negative_class,
+      canonical_constraint,
+      confidence_penalty,
+      suppression_threshold,
+      verification_status,
+      verified_by,
+      verified_at,
+    ] = params;
+
+    verifiedRulesStore.unshift({
+      id,
+      rule_hash,
+      rule_set_version: rule_set_version || 'v2.0-verified',
+      source_correction_id: source_correction_id || '',
+      target_hazard_type,
+      true_negative_class,
+      canonical_constraint,
+      confidence_penalty: Number(confidence_penalty || 0.15),
+      suppression_threshold: Number(suppression_threshold || 0.55),
+      verification_status: verification_status || 'approved',
+      verified_by: verified_by || 'Faculty Reviewer Admin',
+      verified_at: verified_at instanceof Date ? verified_at.toISOString() : String(verified_at || new Date().toISOString()),
+      created_at: new Date().toISOString(),
+    });
+    return [{ affectedRows: 1 }, []];
+  }
+
+  if (upper.startsWith('DELETE FROM VERIFIED_FEEDBACK_RULES WHERE ID =')) {
+    const [id] = params;
+    const before = verifiedRulesStore.length;
+    const remaining = verifiedRulesStore.filter((r) => r.id !== id);
+    verifiedRulesStore.length = 0;
+    verifiedRulesStore.push(...remaining);
+    return [{ affectedRows: before - verifiedRulesStore.length }, []];
   }
 
   return [[], []];

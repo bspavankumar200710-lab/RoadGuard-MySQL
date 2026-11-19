@@ -180,7 +180,7 @@ export const ReportInspectionModal: React.FC<ReportInspectionModalProps> = ({
                           : 'text-slate-600 hover:text-slate-900'
                       }`}
                     >
-                      Annotated Photograph (YOLOv8)
+                      Annotated Photograph (AI)
                     </button>
                     <button
                       onClick={() => setActivePhotoTab('original')}
@@ -223,7 +223,7 @@ export const ReportInspectionModal: React.FC<ReportInspectionModalProps> = ({
                     <Eye className="w-3 h-3 text-cyan-400" />
                     <span>
                       {activePhotoTab === 'annotated' && hasAnnotated
-                        ? 'YOLOv8 Bounding Box View'
+                        ? 'AI Bounding Box View'
                         : 'Original Camera Capture'}
                     </span>
                   </div>
@@ -303,7 +303,13 @@ export const ReportInspectionModal: React.FC<ReportInspectionModalProps> = ({
                     AI Engine & Source
                   </span>
                   <div className="font-bold text-slate-800 flex items-center gap-1.5">
-                    <span>{record.aiEngine === 'yolov8-nano' ? 'YOLOv8 Nano (Edge ONNX)' : 'Gemini 3.8 Flash'}</span>
+                    <span>
+                      {record.aiEngine === 'yolov5' || record.aiEngine === 'yolov8-nano'
+                        ? 'YOLOv5 Road Damage Detector'
+                        : record.aiEngine === 'gemini-standard'
+                        ? 'Standard Gemini Vision'
+                        : 'Feedback-Guided Gemini Vision'}
+                    </span>
                   </div>
                   <p className="text-[11px] text-slate-500 flex items-center gap-1 capitalize">
                     {record.imageSource === 'manual_upload' ? (

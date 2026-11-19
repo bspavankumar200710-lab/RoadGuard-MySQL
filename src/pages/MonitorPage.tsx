@@ -9,8 +9,8 @@ import {
   SeverityLevel,
   DetectionMode,
 } from '../types/detection';
-import { geminiDetectionService } from '../services/geminiDetectionService';
-import { yoloV8DetectionService } from '../services/yoloV8DetectionService';
+import { geminiDetectionService, geminiStandardService, geminiFeedbackService } from '../services/geminiDetectionService';
+import { yoloV5DetectionService } from '../services/yoloV5DetectionService';
 import { detectorRegistry } from '../services/detectorRegistry';
 import { SupportedDetectorModel } from '../services/aiDetectionService';
 import { locationService, LocationCoordinates } from '../services/locationService';
@@ -199,11 +199,11 @@ export const MonitorPage: React.FC<MonitorPageProps> = ({
   const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [realtimeNotification, setRealtimeNotification] = useState<string | null>(null);
 
-  // AI Detector Engine State: 'yolov8-nano' | 'gemini-vision'
+  // AI Detector Engine State: 'gemini-feedback' | 'gemini-standard' | 'yolov5'
   const [activeDetectorId, setActiveDetectorId] = useState<SupportedDetectorModel>(() =>
     detectorRegistry.getActiveDetectorId()
   );
-  const [yoloStatus, setYoloStatus] = useState(() => yoloV8DetectionService.getStatus());
+  const [yoloStatus, setYoloStatus] = useState(() => yoloV5DetectionService.getStatus());
 
   // Keep isMonitoringRef synchronized
   useEffect(() => {
@@ -240,48 +240,37 @@ export const MonitorPage: React.FC<MonitorPageProps> = ({
   useEffect(() => {
     const unsub = detectorRegistry.subscribe(() => {
       setActiveDetectorId(detectorRegistry.getActiveDetectorId());
-      setYoloStatus(yoloV8DetectionService.getStatus());
+      setYoloStatus(yoloV5DetectionService.getStatus());
     });
     return unsub;
   }, []);
 
-  // Poll YOLOv8 status while loading or active
+  // Poll YOLOv5 status while active
   useEffect(() => {
     const interval = setInterval(() => {
-      setYoloStatus(yoloV8DetectionService.getStatus());
-    }, 1200);
+      yoloV5DetectionService.checkHealth().then(() => {
+        setYoloStatus(yoloV5DetectionService.getStatus());
+      });
+    }, 2500);
     return () => clearInterval(interval);
   }, []);
-
-  // Load YOLOv8 model if it's the active detector and not yet ready
-  useEffect(() => {
-    if (activeDetectorId === 'yolov8-nano' && !yoloV8DetectionService.isReady) {
-      yoloV8DetectionService
-        .loadModel()
-        .then(() => {
-          setYoloStatus(yoloV8DetectionService.getStatus());
-          setAnalysisError(null);
-        })
-        .catch((err) => {
-          setYoloStatus(yoloV8DetectionService.getStatus());
-          setAnalysisError(`YOLOv8 Load: ${err.message}`);
-        });
-    }
-  }, [activeDetectorId]);
 
   const handleDetectorChange = (newDetector: SupportedDetectorModel) => {
     detectorRegistry.setActiveDetector(newDetector);
     setActiveDetectorId(newDetector);
     setAnalysisError(null);
-    if (newDetector === 'yolov8-nano' && !yoloV8DetectionService.isReady) {
-      yoloV8DetectionService
-        .loadModel()
-        .then(() => {
-          setYoloStatus(yoloV8DetectionService.getStatus());
+    if (newDetector === 'yolov5' || newDetector === 'yolov8-nano') {
+      yoloV5DetectionService
+        .checkHealth()
+        .then((ready) => {
+          setYoloStatus(yoloV5DetectionService.getStatus());
+          if (!ready) {
+            setAnalysisError('YOLOv5 FastAPI microservice is offline at http://127.0.0.1:8000. Start it with: python yolo-service/app.py');
+          }
         })
         .catch((err) => {
-          setYoloStatus(yoloV8DetectionService.getStatus());
-          setAnalysisError(`YOLOv8 Model Load Error: ${err.message}`);
+          setYoloStatus(yoloV5DetectionService.getStatus());
+          setAnalysisError(`YOLOv5 Service Error: ${err.message}`);
         });
     }
   };
@@ -455,11 +444,11 @@ export const MonitorPage: React.FC<MonitorPageProps> = ({
       setLastFrameTime(Date.now());
 
       let result: DetectionResult;
-      const isYolo = activeDetectorId === 'yolov8-nano';
+      const isYolo = activeDetectorId === 'yolov5' || activeDetectorId === 'yolov8-nano';
 
       if (isYolo) {
-        // Direct zero-copy video frame detection (bypasses base64 encoding/decoding)
-        result = await yoloV8DetectionService.detectRoadProblems(video, 'image/jpeg', detectionMode);
+        // Run dedicated YOLOv5 FastAPI detector
+        result = await yoloV5DetectionService.detectRoadProblems(video, 'image/jpeg', detectionMode);
       } else {
         // Gemini API requires base64 encoded snapshot
         const canvas = canvasRef.current || document.createElement('canvas');
@@ -481,9 +470,9 @@ export const MonitorPage: React.FC<MonitorPageProps> = ({
         return;
       }
 
-      // Synchronize YOLOv8 telemetry status
+      // Synchronize YOLOv5 telemetry status
       if (isYolo) {
-        setYoloStatus(yoloV8DetectionService.getStatus());
+        setYoloStatus(yoloV5DetectionService.getStatus());
       }
 
       // Process and smooth bounding boxes
@@ -642,7 +631,7 @@ export const MonitorPage: React.FC<MonitorPageProps> = ({
       setIsAnalyzingFrame(false);
 
       if (isMonitoringRef.current) {
-        // Controlled frame rate: ~130ms for YOLOv8 (yielding ~7-8 FPS), 4500ms for Gemini
+        // Controlled frame rate: ~130ms for YOLOv5 (yielding ~7-8 FPS), 4500ms for Gemini
         const nextDelayMs = activeDetectorId === 'gemini-vision' ? 4500 : 130;
         captureTimerRef.current = setTimeout(captureAndAnalyzeFrame, nextDelayMs);
       }
@@ -788,14 +777,11 @@ export const MonitorPage: React.FC<MonitorPageProps> = ({
         <div className="flex items-center flex-wrap gap-2 text-xs text-slate-300">
           <Cpu className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
           <span className="font-bold text-[10px] sm:text-[11px] text-slate-400">AI MODEL:</span>
-          {activeDetectorId === 'yolov8-nano' && (
+          {(activeDetectorId === 'yolov5' || activeDetectorId === 'yolov8-nano') && (
             <div className="inline-flex items-center flex-wrap gap-1.5 text-[10px] font-mono text-cyan-300 bg-cyan-950/80 px-2.5 py-0.5 rounded-full border border-cyan-800/60">
-              <span className="font-bold text-cyan-200">RDD: D00, D10, D20, D40</span>
-              {yoloStatus.loadTimeMs > 0 && (
-                <span className="text-slate-400">• Load: {yoloStatus.loadTimeMs}ms</span>
-              )}
-              {yoloStatus.lastInferenceLatencyMs > 0 && (
-                <span className="text-emerald-400 font-bold">• Latency: {yoloStatus.lastInferenceLatencyMs}ms</span>
+              <span className="font-bold text-cyan-200">YOLOv5 RDD: D00, D10, D20, D40</span>
+              {yoloStatus.lastLatencyMs > 0 && (
+                <span className="text-emerald-400 font-bold">• Latency: {yoloStatus.lastLatencyMs}ms</span>
               )}
               {yoloStatus.frameCount > 0 && (
                 <span className="text-blue-300">• Frames: {yoloStatus.frameCount}</span>
@@ -803,50 +789,56 @@ export const MonitorPage: React.FC<MonitorPageProps> = ({
               <span className="text-amber-300">• Conf: {Math.round(yoloStatus.confidenceThreshold * 100)}%</span>
             </div>
           )}
+          {activeDetectorId === 'gemini-feedback' && (
+            <span className="text-[10px] font-mono text-purple-300 bg-purple-950/80 px-2 py-0.5 rounded-full border border-purple-800/60 font-semibold">
+              Feedback Rules Gating Active (v2.0-verified)
+            </span>
+          )}
+          {activeDetectorId === 'gemini-standard' && (
+            <span className="text-[10px] font-mono text-slate-300 bg-slate-800/80 px-2 py-0.5 rounded-full border border-slate-700/60">
+              Zero-Feedback Baseline Prompt
+            </span>
+          )}
         </div>
 
         <div className="flex items-center gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800">
           <button
-            onClick={() => handleDetectorChange('yolov8-nano')}
+            onClick={() => handleDetectorChange('gemini-feedback')}
             className={`px-2 sm:px-2.5 py-1 rounded-lg text-[10px] sm:text-[11px] font-bold transition-all flex items-center gap-1.5 ${
-              activeDetectorId === 'yolov8-nano'
+              activeDetectorId === 'gemini-feedback' || activeDetectorId === 'gemini-vision'
+                ? 'bg-purple-600 text-white shadow-sm'
+                : 'text-slate-400 hover:text-white'
+            }`}
+          >
+            <Sparkles className="w-3 h-3 text-purple-200 shrink-0" />
+            <span>Feedback Gemini</span>
+          </button>
+
+          <button
+            onClick={() => handleDetectorChange('gemini-standard')}
+            className={`px-2 sm:px-2.5 py-1 rounded-lg text-[10px] sm:text-[11px] font-bold transition-all flex items-center gap-1.5 ${
+              activeDetectorId === 'gemini-standard'
+                ? 'bg-slate-700 text-white shadow-sm'
+                : 'text-slate-400 hover:text-white'
+            }`}
+          >
+            <span>Standard Gemini</span>
+          </button>
+
+          <button
+            onClick={() => handleDetectorChange('yolov5')}
+            className={`px-2 sm:px-2.5 py-1 rounded-lg text-[10px] sm:text-[11px] font-bold transition-all flex items-center gap-1.5 ${
+              activeDetectorId === 'yolov5' || activeDetectorId === 'yolov8-nano'
                 ? 'bg-blue-600 text-white shadow-sm'
                 : 'text-slate-400 hover:text-white'
             }`}
           >
             <span
               className={`w-2 h-2 rounded-full shrink-0 ${
-                yoloStatus.isReady
-                  ? 'bg-emerald-400 animate-pulse'
-                  : yoloStatus.status === 'loading'
-                  ? 'bg-amber-400 animate-ping'
-                  : yoloStatus.status === 'error'
-                  ? 'bg-rose-500'
-                  : 'bg-slate-500'
+                yoloStatus.isReady ? 'bg-emerald-400' : 'bg-amber-400 animate-pulse'
               }`}
             />
-            <span>YOLOv8 Nano (Edge ONNX)</span>
-            {yoloStatus.status === 'loading' && (
-              <span className="text-[9px] text-blue-200 animate-pulse">Loading...</span>
-            )}
-            {yoloStatus.status === 'ready' && (
-              <span className="text-[9px] text-emerald-300 font-mono font-bold">Ready</span>
-            )}
-            {yoloStatus.status === 'error' && (
-              <span className="text-[9px] text-rose-300 font-mono font-bold">Error</span>
-            )}
-          </button>
-
-          <button
-            onClick={() => handleDetectorChange('gemini-vision')}
-            className={`px-2 sm:px-2.5 py-1 rounded-lg text-[10px] sm:text-[11px] font-bold transition-all flex items-center gap-1.5 ${
-              activeDetectorId === 'gemini-vision'
-                ? 'bg-purple-600 text-white shadow-sm'
-                : 'text-slate-400 hover:text-white'
-            }`}
-          >
-            <Sparkles className="w-3 h-3 text-purple-300 shrink-0" />
-            <span>Gemini 3.8 Flash</span>
+            <span>YOLOv5 (PyTorch)</span>
           </button>
         </div>
       </div>
@@ -901,17 +893,20 @@ export const MonitorPage: React.FC<MonitorPageProps> = ({
             <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
             <span className="truncate max-w-sm sm:max-w-md">{analysisError}</span>
           </div>
-          {activeDetectorId === 'yolov8-nano' && (
+          {(activeDetectorId === 'yolov5' || activeDetectorId === 'yolov8-nano') && (
             <button
               onClick={() => {
                 setAnalysisError(null);
-                yoloV8DetectionService.loadModel().catch((err) => {
-                  setAnalysisError(`Retry Failed: ${err.message}`);
+                yoloV5DetectionService.checkHealth().then((ready) => {
+                  setYoloStatus(yoloV5DetectionService.getStatus());
+                  if (!ready) {
+                    setAnalysisError('YOLOv5 FastAPI microservice is offline at http://127.0.0.1:8000');
+                  }
                 });
               }}
               className="px-2 py-0.5 rounded bg-rose-600 hover:bg-rose-500 text-white font-bold text-[10px] shrink-0"
             >
-              Retry Load
+              Retry Connection
             </button>
           )}
         </div>

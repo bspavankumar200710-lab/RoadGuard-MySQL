@@ -10,8 +10,10 @@ export type DetectionInputSource =
 
 /**
  * Common AI Detection Service Contract
- * Designed so detection backends (YOLOv8-nano, Gemini Vision, etc.)
- * can be swapped interchangeably without altering camera, dashboard, or map UI.
+ * Supports the 3 primary detection architectures evaluated in RoadGuard:
+ *  1. Standard Gemini Vision (baseline, unaugmented prompt)
+ *  2. Feedback-Guided Gemini Vision (prompt-gated with verified reviewer rules)
+ *  3. YOLOv5 Road Damage Detection (dedicated Python FastAPI neural detector)
  */
 export interface IAIDetectionService {
   readonly id: string;
@@ -25,5 +27,10 @@ export interface IAIDetectionService {
   ): Promise<DetectionResult>;
 }
 
-export type SupportedDetectorModel = 'gemini-vision' | 'yolov8-nano';
+export type SupportedDetectorModel =
+  | 'gemini-standard'
+  | 'gemini-feedback'
+  | 'yolov5'
+  | 'gemini-vision' // Backward-compatible alias for gemini-feedback
+  | 'yolov8-nano';   // Backward-compatible alias for yolov5
 

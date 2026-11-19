@@ -1,5 +1,5 @@
 import { DetectedObject, DetectionResult } from '../types/detection';
-import { yoloV8DetectionService } from './yoloV8DetectionService';
+import { yoloV5DetectionService } from './yoloV5DetectionService';
 import {
   VerifiedFeedbackRule,
   applyVerifiedRulesToDetections,
@@ -10,19 +10,12 @@ import { BenchmarkSample } from './evaluationDataset';
 
 /**
  * ============================================================================
- * Specialized Lightweight Edge Baseline + Standard/Feedback Gemini Runners
+ * Specialized YOLOv5 Road Damage + Standard/Feedback Gemini Runners
  * ============================================================================
- * Addresses Faculty Review Modification #2 & #5:
- * - Baseline 1 (YOLOv8 / Pixel Edge Baseline): Uses real ONNX YOLOv8-nano when
- *   /models/yolov8n-road.onnx is loaded; otherwise executes a real pixel-level
- *   Sobel gradient + dark-cavity + specular/morphology extractor directly on
- *   the 640x480 ImageData buffer (zero fabricated random metrics).
- * - Baseline 2 (Standard Gemini Prompting): Calls /api/detect with
- *   useFeedbackRules=false and temperature=0; if GEMINI_API_KEY is unconfigured
- *   in the local runtime, runs a deterministic pixel-feature proxy clearly
- *   flagged as offline proxy mode.
- * - Proposed Method (Feedback-Guided RoadGuard): Runs with compiled
- *   VerifiedFeedbackRules (pre-inference schema + post-inference gating).
+ * Addresses Faculty Review Modification #2, #3, #4, #5:
+ * - Method A (Standard Gemini Vision): Calls /api/detect with useFeedbackRules=false
+ * - Method B (Feedback-Guided Gemini Vision): Runs with compiled VerifiedFeedbackRules
+ * - Method C (YOLOv5 Specialized Road Damage): Calls dedicated YOLOv5 FastAPI service
  */
 
 export interface PixelMorphologyReport {
@@ -228,23 +221,27 @@ export interface EvaluatedInferenceOutput {
 }
 
 /**
- * Baseline 1: Lightweight Edge Detector (YOLOv8-nano ONNX if available,
- * otherwise Sobel + Dark-Anomaly Connected-Component Edge Baseline).
+ * Method C: YOLOv5 Specialized Road Damage Detector (FastAPI service if running,
+ * otherwise deterministic pixel-level Sobel & morphological edge baseline).
  */
 export async function runEdgeBaselineDetector(
   imageBase64: string
 ): Promise<EvaluatedInferenceOutput> {
   const t0 = performance.now();
 
-  // If real ONNX session is ready, use it directly
-  if (yoloV8DetectionService.hasOnnxSession) {
-    const res = await yoloV8DetectionService.detectRoadProblems(imageBase64, 'image/jpeg', 'potholes');
-    return {
-      result: res,
-      usedLiveGeminiApi: false,
-      estimatedTokens: { input: 0, output: 0 },
-      suppressedCount: 0,
-    };
+  // If YOLOv5 service is ready, call it directly
+  if (yoloV5DetectionService.isReady) {
+    try {
+      const res = await yoloV5DetectionService.detectRoadProblems(imageBase64, 'image/jpeg', 'potholes');
+      return {
+        result: res,
+        usedLiveGeminiApi: false,
+        estimatedTokens: { input: 0, output: 0 },
+        suppressedCount: 0,
+      };
+    } catch (e) {
+      console.warn('[Evaluation] YOLOv5 service call failed, falling back to pixel baseline:', e);
+    }
   }
 
   // Otherwise run real pixel-level Sobel & morphology edge baseline

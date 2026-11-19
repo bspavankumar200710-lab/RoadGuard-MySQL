@@ -148,9 +148,9 @@ export const EvaluationPage: React.FC = () => {
             Feedback-Guided Road Damage Evaluation & Baseline Suite
           </h2>
           <p className="text-xs sm:text-sm text-slate-600 leading-relaxed">
-            Reproducible 3-way comparison of YOLOv8/Edge Sobel, Standard Gemini Prompting, and
-            Verified Feedback-Guided RoadGuard on 24 untouched held-out test frames across 4 unseen
-            geographic corridors.
+            Reproducible 3-way comparison of YOLOv5 Road Damage Detector, Standard Gemini Vision, and
+            Verified Feedback-Guided Gemini on untouched held-out test frames across diverse unseen
+            geographic road corridors.
           </p>
         </div>
 

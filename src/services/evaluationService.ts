@@ -26,7 +26,7 @@ import {
  *   Recall@IoU=0.50, Precision@IoU=0.50) from Image-Level Screening metrics
  *   (Image Accuracy, Image Recall, False Positive Rate, Specificity).
  * - Compares 3 systems on identical untouched held-out test images:
- *   1) Lightweight Edge Baseline (YOLOv8-nano ONNX / Sobel Edge Detector)
+ *   1) Lightweight Edge Baseline (YOLOv5 PyTorch Service / Edge Baseline)
  *   2) Standard Gemini Prompting (Zero-Feedback Baseline)
  *   3) Feedback-Guided RoadGuard (Verified Calibration Rules + Gating)
  * - Validates Confidence Calibration (ECE, Brier) & Severity Agreement.
@@ -499,7 +499,7 @@ export async function runHeldOutEvaluationSuite(
       `Evaluating [${sample.region}] ${sample.title} (${i + 1}/${testSamples.length})`
     );
 
-    // 1. Specialized Edge / YOLOv8 Baseline
+    // 1. Specialized YOLOv5 / Edge Baseline
     const edgeOut = await runEdgeBaselineDetector(imageBase64);
     edgeRecords.push(
       buildSampleRecord(
@@ -546,8 +546,8 @@ export async function runHeldOutEvaluationSuite(
 
   const edgeSummary = summarizeCandidate(
     'edge-yolo-baseline',
-    'YOLOv8 / Edge Sobel Baseline',
-    'Localized bounding-box detector (D00/D10/D20/D40) running on-device without feedback rules',
+    'YOLOv5 Specialized Road Damage Detector',
+    'Dedicated neural bounding-box detector (D00/D10/D20/D40) running via FastAPI microservice',
     edgeRecords
   );
 

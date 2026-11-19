@@ -222,7 +222,7 @@ class DetectionService {
       damageName?: string;
       annotatedImageUrl?: string;
       imageSource?: 'live_camera' | 'manual_upload';
-      aiEngine?: 'yolov8-nano' | 'gemini-vision';
+      aiEngine?: 'yolov5' | 'gemini-feedback' | 'gemini-standard' | 'yolov8-nano' | 'gemini-vision';
       verificationStatus?: VerificationStatusType;
     }
   ): Promise<RoadHazardRecord> {
@@ -258,7 +258,7 @@ class DetectionService {
       recordData.imageSource || 'live_camera';
 
     const aiEngine =
-      recordData.aiEngine || 'yolov8-nano';
+      recordData.aiEngine || 'gemini-feedback';
 
     const verificationStatus: VerificationStatusType =
       recordData.verificationStatus ||
@@ -306,7 +306,7 @@ class DetectionService {
 
             // IMPORTANT:
             // Do not regenerate the annotation when the
-            // complete YOLOv8 annotated image already exists.
+            // complete YOLOv5 or Gemini annotated image already exists.
             //
             // For live camera detections or records without
             // an annotation, generate a fallback annotation.

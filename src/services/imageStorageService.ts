@@ -189,7 +189,7 @@ export class ImageStorageService {
   }
 
   /**
-   * Generates an annotated JPEG image with YOLOv8 bounding boxes,
+   * Generates an annotated JPEG image with AI bounding boxes,
    * damage codes and confidence scores.
    */
   public async generateAnnotatedImage(

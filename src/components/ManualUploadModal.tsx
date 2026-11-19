@@ -7,7 +7,7 @@ import {
 } from '../utils/motion';
 import { getActiveDetector } from '../services/detectorRegistry';
 import { SupportedDetectorModel } from '../services/aiDetectionService';
-import { yoloV8DetectionService } from '../services/yoloV8DetectionService';
+import { yoloV5DetectionService } from '../services/yoloV5DetectionService';
 import { locationService } from '../services/locationService';
 import { detectionService } from '../services/detectionService';
 import { imageStorageService } from '../services/imageStorageService';
@@ -41,7 +41,7 @@ export const ManualUploadModal: React.FC<ManualUploadModalProps> = ({
   const [previewDataUrl, setPreviewDataUrl] = useState<string>('');
   const [annotatedPreviewUrl, setAnnotatedPreviewUrl] = useState<string>('');
   const [selectedDetector, setSelectedDetector] =
-    useState<SupportedDetectorModel>('yolov8-nano');
+    useState<SupportedDetectorModel>('yolov5');
 
   const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
   const [isSaving, setIsSaving] = useState<boolean>(false);
@@ -293,43 +293,66 @@ export const ManualUploadModal: React.FC<ManualUploadModalProps> = ({
                   <span>Choose AI Detection Engine:</span>
                 </label>
 
-                <div className="grid grid-cols-2 gap-2 bg-slate-100 p-1.5 rounded-2xl">
+                <div className="grid grid-cols-3 gap-1.5 bg-slate-100 p-1.5 rounded-2xl">
                   <button
-                    onClick={() => setSelectedDetector('yolov8-nano')}
-                    className={`py-2 px-3 text-xs font-bold rounded-xl transition-all flex items-center justify-center gap-2 ${
-                      selectedDetector === 'yolov8-nano'
+                    onClick={() => setSelectedDetector('yolov5')}
+                    className={`py-2 px-2 text-[11px] font-bold rounded-xl transition-all flex flex-col items-center justify-center gap-1 ${
+                      selectedDetector === 'yolov5' || selectedDetector === 'yolov8-nano'
                         ? 'bg-blue-600 text-white shadow-sm'
                         : 'text-slate-600 hover:text-slate-900'
                     }`}
                   >
-                    <span
-                      className={`w-2 h-2 rounded-full ${
-                        yoloV8DetectionService.isReady
-                          ? 'bg-emerald-400'
-                          : 'bg-amber-300 animate-pulse'
-                      }`}
-                    />
-                    <span>YOLOv8 Nano (ONNX Edge)</span>
+                    <div className="flex items-center gap-1.5">
+                      <span
+                        className={`w-2 h-2 rounded-full ${
+                          yoloV5DetectionService.isReady
+                            ? 'bg-emerald-400'
+                            : 'bg-amber-300 animate-pulse'
+                        }`}
+                      />
+                      <span>YOLOv5 Detector</span>
+                    </div>
+                    <span className="text-[9px] opacity-80">PyTorch RDD</span>
                   </button>
 
                   <button
-                    onClick={() => setSelectedDetector('gemini-vision')}
-                    className={`py-2 px-3 text-xs font-bold rounded-xl transition-all flex items-center justify-center gap-2 ${
-                      selectedDetector === 'gemini-vision'
+                    onClick={() => setSelectedDetector('gemini-feedback')}
+                    className={`py-2 px-2 text-[11px] font-bold rounded-xl transition-all flex flex-col items-center justify-center gap-1 ${
+                      selectedDetector === 'gemini-feedback' || selectedDetector === 'gemini-vision'
                         ? 'bg-purple-600 text-white shadow-sm'
                         : 'text-slate-600 hover:text-slate-900'
                     }`}
                   >
-                    <Sparkles className="w-3.5 h-3.5 text-purple-200" />
-                    <span>Gemini 3.8 Flash Vision</span>
+                    <div className="flex items-center gap-1.5">
+                      <Sparkles className="w-3 h-3 text-purple-200" />
+                      <span>Feedback Gemini</span>
+                    </div>
+                    <span className="text-[9px] opacity-80">Verified Rules</span>
+                  </button>
+
+                  <button
+                    onClick={() => setSelectedDetector('gemini-standard')}
+                    className={`py-2 px-2 text-[11px] font-bold rounded-xl transition-all flex flex-col items-center justify-center gap-1 ${
+                      selectedDetector === 'gemini-standard'
+                        ? 'bg-slate-700 text-white shadow-sm'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    <div className="flex items-center gap-1.5">
+                      <Eye className="w-3 h-3 text-slate-300" />
+                      <span>Standard Gemini</span>
+                    </div>
+                    <span className="text-[9px] opacity-80">Zero-Feedback</span>
                   </button>
                 </div>
 
-                {selectedDetector === 'yolov8-nano' && (
-                  <p className="text-[10px] text-slate-500 mt-1 pl-1">
-                    Trained on 4 Road Damage classes: D00 (Longitudinal), D10 (Transverse), D20 (Alligator), D40 (Pothole).
-                  </p>
-                )}
+                <p className="text-[10px] text-slate-500 mt-1 pl-1">
+                  {selectedDetector === 'yolov5' || selectedDetector === 'yolov8-nano'
+                    ? 'YOLOv5 Neural Detector: Trained on 4 classes: D00 (Longitudinal), D10 (Transverse), D20 (Alligator), D40 (Pothole).'
+                    : selectedDetector === 'gemini-feedback'
+                    ? 'Feedback-Guided Gemini Vision: Evaluates road features using verified reviewer rules to suppress false alarms.'
+                    : 'Standard Gemini Vision: Baseline prompt without feedback rules for comparative false-positive analysis.'}
+                </p>
               </div>
 
               {/* Step 2: File Picker */}
@@ -374,7 +397,7 @@ export const ManualUploadModal: React.FC<ManualUploadModalProps> = ({
                                 : 'text-slate-600 hover:text-slate-900'
                             }`}
                           >
-                            Annotated with YOLOv8 Bounding Boxes
+                            Annotated AI Bounding Boxes ({analysisResult?.objects?.length || 0})
                           </button>
 
                           <button
@@ -419,7 +442,7 @@ export const ManualUploadModal: React.FC<ManualUploadModalProps> = ({
 
                         <span>
                           {activeViewTab === 'annotated' && annotatedPreviewUrl
-                            ? 'YOLOv8 Annotated View'
+                            ? 'AI Annotated View'
                             : 'Original Photo'}
                         </span>
                       </div>
@@ -564,7 +587,7 @@ export const ManualUploadModal: React.FC<ManualUploadModalProps> = ({
                         <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
 
                         <span>
-                          Running {selectedDetector === 'yolov8-nano' ? 'YOLOv8...' : 'Gemini...'}
+                          Running {selectedDetector === 'yolov5' ? 'YOLOv5...' : 'Gemini Vision...'}
                         </span>
                       </>
                     ) : (

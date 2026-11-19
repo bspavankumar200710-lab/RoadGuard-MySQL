@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { DEMO_SAMPLES, DemoSample } from '../utils/demoData';
 import { geminiDetectionService } from '../services/geminiDetectionService';
-import { yoloV8DetectionService } from '../services/yoloV8DetectionService';
+import { yoloV5DetectionService } from '../services/yoloV5DetectionService';
 import { getActiveDetector, detectorRegistry } from '../services/detectorRegistry';
 import { SupportedDetectorModel } from '../services/aiDetectionService';
 import { locationService } from '../services/locationService';
@@ -51,7 +51,7 @@ export const DemoModeModal: React.FC<DemoModeModalProps> = ({
   const [selectedDetector, setSelectedDetector] = useState<SupportedDetectorModel>(() =>
     detectorRegistry.getActiveDetectorId()
   );
-  const [detectorStatus, setDetectorStatus] = useState(() => yoloV8DetectionService.getStatus());
+  const [detectorStatus, setDetectorStatus] = useState(() => yoloV5DetectionService.getStatus());
 
   useEffect(() => {
     if (!isCustomUpload) {
@@ -62,15 +62,15 @@ export const DemoModeModal: React.FC<DemoModeModalProps> = ({
     }
   }, [selectedSample, isCustomUpload]);
 
-  // Ensure YOLOv8 model starts loading if chosen
+  // Ensure YOLOv5 health check runs
   useEffect(() => {
-    if (selectedDetector === 'yolov8-nano' && !yoloV8DetectionService.isReady) {
-      yoloV8DetectionService
-        .loadModel()
-        .then(() => setDetectorStatus(yoloV8DetectionService.getStatus()))
+    if (selectedDetector === 'yolov5' || selectedDetector === 'yolov8-nano') {
+      yoloV5DetectionService
+        .checkHealth()
+        .then(() => setDetectorStatus(yoloV5DetectionService.getStatus()))
         .catch((err) => {
-          setDetectorStatus(yoloV8DetectionService.getStatus());
-          setErrorMsg(`YOLOv8 Load: ${err.message}`);
+          setDetectorStatus(yoloV5DetectionService.getStatus());
+          setErrorMsg(`YOLOv5 Health: ${err.message}`);
         });
     }
   }, [selectedDetector]);
@@ -105,7 +105,7 @@ export const DemoModeModal: React.FC<DemoModeModalProps> = ({
       setAnalysisResult(null);
       setSavedSuccessId(null);
 
-      // Call selected AI Vision Service (YOLOv8-nano ONNX Edge or Gemini Flash Vision)
+      // Call selected AI Vision Service (YOLOv5 FastAPI or Gemini Vision)
       const detector = getActiveDetector(selectedDetector);
       const result = await detector.detectRoadProblems(previewImage, 'image/jpeg', targetMode);
       setAnalysisResult(result);
@@ -226,7 +226,7 @@ export const DemoModeModal: React.FC<DemoModeModalProps> = ({
                 <Cpu className="w-3.5 h-3.5 text-blue-600" />
                 <span>AI Detection Engine:</span>
               </label>
-              {selectedDetector === 'yolov8-nano' && (
+              {(selectedDetector === 'yolov5' || selectedDetector === 'yolov8-nano') && (
                 <span className="text-[10px] font-mono font-semibold px-2 py-0.5 rounded-full bg-cyan-100 text-cyan-800">
                   Classes: D00, D10, D20, D40
                 </span>
@@ -234,9 +234,9 @@ export const DemoModeModal: React.FC<DemoModeModalProps> = ({
             </div>
             <div className="grid grid-cols-2 gap-2 bg-slate-100 p-1.5 rounded-2xl">
               <button
-                onClick={() => setSelectedDetector('yolov8-nano')}
+                onClick={() => setSelectedDetector('yolov5')}
                 className={`py-2 px-3 text-xs font-bold rounded-xl transition-all flex items-center justify-center gap-2 ${
-                  selectedDetector === 'yolov8-nano'
+                  selectedDetector === 'yolov5' || selectedDetector === 'yolov8-nano'
                     ? 'bg-blue-600 text-white shadow-sm'
                     : 'text-slate-600 hover:text-slate-900'
                 }`}
@@ -245,12 +245,10 @@ export const DemoModeModal: React.FC<DemoModeModalProps> = ({
                   className={`w-2 h-2 rounded-full ${
                     detectorStatus.isReady
                       ? 'bg-emerald-300'
-                      : detectorStatus.status === 'loading'
-                      ? 'bg-amber-300 animate-ping'
-                      : 'bg-slate-300'
+                      : 'bg-amber-300 animate-pulse'
                   }`}
                 />
-                <span>YOLOv8 Nano (ONNX Edge)</span>
+                <span>YOLOv5 Road Damage</span>
               </button>
               <button
                 onClick={() => setSelectedDetector('gemini-vision')}

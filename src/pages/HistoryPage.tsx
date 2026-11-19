@@ -630,7 +630,7 @@ export const HistoryPage: React.FC<HistoryPageProps> = ({
                       <div
                         onClick={() => setInspectedRecord(item)}
                         className="relative w-14 h-14 rounded-xl overflow-hidden bg-slate-900 border border-slate-200 shrink-0 cursor-pointer group/thumb shadow-sm hover:ring-2 hover:ring-blue-500 transition-all"
-                        title="Click to inspect original and YOLOv8 annotated photos"
+                        title="Click to inspect original and AI annotated photos"
                       >
                         <img
                           src={thumbUrl}

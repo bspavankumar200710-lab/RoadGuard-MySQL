@@ -9,6 +9,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "start": "tsx server.ts",
+    "start:yolo": "python yolo-service/app.py",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit"
   },
@@ -29,7 +30,6 @@
     "lucide-react": "^0.546.0",
     "motion": "^12.23.24",
     "mysql2": "^3.24.6",
-    "onnxruntime-web": "^1.31.1",
     "qrcode.react": "^4.2.0",
     "react": "^19.0.1",
     "react-dom": "^19.0.1",

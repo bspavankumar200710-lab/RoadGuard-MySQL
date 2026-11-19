@@ -674,7 +674,11 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                           </span>
 
                           <span className="text-[9px] font-mono text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded">
-                            {item.aiEngine === 'yolov8-nano' ? '⚡ YOLOv8' : '☁️ Gemini'}
+                            {item.aiEngine === 'yolov5' || item.aiEngine === 'yolov8-nano'
+                              ? '⚡ YOLOv5'
+                              : item.aiEngine === 'gemini-standard'
+                              ? '☁️ Std Gemini'
+                              : '🧠 Feedback Gemini'}
                           </span>
 
                           {item.imageSource === 'manual_upload' && (

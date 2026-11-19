@@ -28,7 +28,12 @@ export interface DetectionResult {
 export type HazardVerificationStatus = 'unverified' | 'confirmed' | 'disputed';
 export type VerificationStatusType = 'pending' | 'verified' | 'rejected';
 export type ImageSourceType = 'live_camera' | 'manual_upload';
-export type AIEngineType = 'yolov8-nano' | 'gemini-vision';
+export type AIEngineType =
+  | 'yolov5'
+  | 'gemini-feedback'
+  | 'gemini-standard'
+  | 'yolov8-nano'
+  | 'gemini-vision';
 export type DamageClassCode = 'D00' | 'D10' | 'D20' | 'D40' | 'VEHICLE_SPEED' | 'BROKEN_SIGN' | 'OTHER';
 
 export interface RoadHazardRecord {
@@ -46,9 +51,10 @@ export interface RoadHazardRecord {
   locationName?: string;
   timestamp: string;
   imageUrl?: string; // Base64 data URL for original image, stored in MySQL
-  annotatedImageUrl?: string; // Base64 data URL for YOLOv8 annotated image, stored in MySQL Storage download URL for YOLOv8 annotated image
+  annotatedImageUrl?: string; // Base64 data URL or MySQL storage URL for YOLOv5 / Gemini annotated image
   imageSource?: ImageSourceType; // 'live_camera' | 'manual_upload'
-  aiEngine?: AIEngineType; // 'yolov8-nano' | 'gemini-vision'
+  aiEngine?: AIEngineType;
+  feedbackRuleVersion?: string; // Version of verified feedback rule applied (e.g. v2.0-verified)
   verificationStatus?: VerificationStatusType; // 'pending' | 'verified' | 'rejected'
   box2d?: [number, number, number, number];
   // Vehicle / Scooter speed estimation

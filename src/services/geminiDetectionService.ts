@@ -4,14 +4,27 @@ import { analyzeFrameLocally } from './localImageAnalyzer';
 import { agentLearningService } from './agentLearningService';
 
 export class GeminiDetectionService implements IAIDetectionService {
-  public readonly id = 'gemini-vision';
-  public readonly name = 'Google Gemini 3.8 Flash Vision (Self-Improving Agent)';
-  public readonly version = 'v2.4';
+  public readonly id: string;
+  public readonly name: string;
+  public readonly version: string;
   public readonly isReady = true;
+  private useFeedbackRules: boolean;
+
+  constructor(
+    id: string = 'gemini-feedback',
+    name: string = 'Feedback-Guided Gemini Vision (Verified Rules)',
+    useFeedbackRules: boolean = true
+  ) {
+    this.id = id;
+    this.name = name;
+    this.version = 'v2.4-verified';
+    this.useFeedbackRules = useFeedbackRules;
+  }
 
   /**
-   * Sends the road camera snapshot to the server-side Gemini API endpoint,
-   * injecting learned feedback and mistake corrections dynamically.
+   * Sends road camera frame or uploaded photograph to /api/detect.
+   * If useFeedbackRules is true, incorporates verified reviewer rules & gating.
+   * If useFeedbackRules is false (Standard Gemini mode), uses clean baseline prompt.
    */
   public async detectRoadProblems(
     source: DetectionInputSource,
@@ -36,7 +49,9 @@ export class GeminiDetectionService implements IAIDetectionService {
       imageBase64 = '';
     }
 
-    const learnedDirectives = agentLearningService.getLearnedPromptDirectives();
+    const learnedDirectives = this.useFeedbackRules
+      ? agentLearningService.getLearnedPromptDirectives()
+      : '';
 
     try {
       const response = await fetch('/api/detect', {
@@ -49,6 +64,7 @@ export class GeminiDetectionService implements IAIDetectionService {
           imageBase64,
           mimeType,
           mode,
+          useFeedbackRules: this.useFeedbackRules,
           learnedDirectives,
         }),
       });
@@ -68,7 +84,7 @@ export class GeminiDetectionService implements IAIDetectionService {
         detected: Boolean(data.detected),
         objects: Array.isArray(data.objects) ? data.objects : [],
         latencyMs: Math.round(performance.now() - startTime),
-        modelUsed: data.modelUsed || 'gemini-3.8-flash',
+        modelUsed: data.modelUsed || this.name,
       };
     } catch (err: any) {
       console.warn('[GeminiDetectionService] Network issue, switching to local vision analyzer:', err?.message);
@@ -77,4 +93,19 @@ export class GeminiDetectionService implements IAIDetectionService {
   }
 }
 
-export const geminiDetectionService = new GeminiDetectionService();
+// Mode A: Standard Gemini Vision (clean baseline instructions without feedback rules)
+export const geminiStandardService = new GeminiDetectionService(
+  'gemini-standard',
+  'Standard Gemini Vision (Baseline)',
+  false
+);
+
+// Mode B: Feedback-Guided Gemini Vision (verified driver corrections & gating)
+export const geminiFeedbackService = new GeminiDetectionService(
+  'gemini-feedback',
+  'Feedback-Guided Gemini Vision (Verified Rules)',
+  true
+);
+
+// Backward-compatible alias
+export const geminiDetectionService = geminiFeedbackService;
