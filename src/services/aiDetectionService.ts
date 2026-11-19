@@ -1,5 +1,13 @@
 import { DetectionResult, DetectionMode } from '../types/detection';
 
+export type DetectionInputSource =
+  | string
+  | HTMLVideoElement
+  | HTMLCanvasElement
+  | ImageData
+  | ImageBitmap
+  | HTMLImageElement;
+
 /**
  * Common AI Detection Service Contract
  * Designed so detection backends (YOLOv8-nano, Gemini Vision, etc.)
@@ -10,7 +18,12 @@ export interface IAIDetectionService {
   readonly name: string;
   readonly version: string;
   readonly isReady: boolean;
-  detectRoadProblems(imageBase64: string, mimeType?: string, mode?: DetectionMode): Promise<DetectionResult>;
+  detectRoadProblems(
+    source: DetectionInputSource,
+    mimeType?: string,
+    mode?: DetectionMode
+  ): Promise<DetectionResult>;
 }
 
 export type SupportedDetectorModel = 'gemini-vision' | 'yolov8-nano';
+

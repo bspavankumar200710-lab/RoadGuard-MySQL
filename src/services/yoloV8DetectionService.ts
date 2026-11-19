@@ -1,8 +1,12 @@
 import * as ort from 'onnxruntime-web';
-import { IAIDetectionService } from './aiDetectionService';
-import { DetectionResult, DetectedObject, DetectionMode, HazardType, SeverityLevel } from '../types/detection';
-import { extractRoadPixelMorphology } from './edgeBaselineDetector';
-import { computeValidatedSeverity } from './feedbackEngine';
+import { IAIDetectionService, DetectionInputSource } from './aiDetectionService';
+import {
+  DetectionResult,
+  DetectedObject,
+  DetectionMode,
+  HazardType,
+  SeverityLevel,
+} from '../types/detection';
 
 /**
  * =========================================================================
@@ -83,7 +87,6 @@ export class YOLOv8DetectionService implements IAIDetectionService {
   private loadingPromise: Promise<boolean> | null = null;
   private lastError: string | null = null;
   private modelLoadTimeMs: number = 0;
-  private usingEdgeFallback: boolean = false;
 
   // Inference tuning parameters
   private confidenceThreshold = 0.25; // Standard YOLOv8 detection threshold
@@ -91,12 +94,29 @@ export class YOLOv8DetectionService implements IAIDetectionService {
   private targetInputSize = 640;
   private modelPath = '/models/yolov8n-road.onnx';
 
+  // Tensor inspection metadata
+  private inputTensorName = 'images';
+  private outputTensorName = 'output0';
+  private inputDims = [1, 3, 640, 640];
+  private outputDims = [1, 8, 8400];
+
+  // Runtime telemetry
+  private frameCount = 0;
+  private lastInferenceLatencyMs = 0;
+  private lastDetectionsCount = 0;
+  private isInferring = false;
+
+  // Reusable buffers and canvases to avoid per-frame GC pauses
+  private offscreenCanvas: HTMLCanvasElement | OffscreenCanvas | null = null;
+  private offscreenCtx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null = null;
+  private inputBuffer: Float32Array = new Float32Array(1 * 3 * 640 * 640);
+
   constructor() {
     this.configureWasmEnvironment();
   }
 
   public get isReady(): boolean {
-    return this.status === 'ready' && (this.session !== null || this.usingEdgeFallback);
+    return this.status === 'ready' && this.session !== null;
   }
 
   public get hasOnnxSession(): boolean {
@@ -104,28 +124,27 @@ export class YOLOv8DetectionService implements IAIDetectionService {
   }
 
   public get isUsingFallback(): boolean {
-    return this.usingEdgeFallback;
+    return false;
   }
 
-  public getStatus(): {
-    status: ModelLoadingStatus;
-    error: string | null;
-    isReady: boolean;
-    hasOnnxSession: boolean;
-    usingEdgeFallback: boolean;
-    loadTimeMs: number;
-    modelPath: string;
-    classes: typeof ROAD_DAMAGE_CLASSES;
-  } {
+  public getStatus() {
     return {
       status: this.status,
       error: this.lastError,
       isReady: this.isReady,
       hasOnnxSession: this.hasOnnxSession,
-      usingEdgeFallback: this.usingEdgeFallback,
+      usingEdgeFallback: false,
       loadTimeMs: this.modelLoadTimeMs,
       modelPath: this.modelPath,
       classes: ROAD_DAMAGE_CLASSES,
+      confidenceThreshold: this.confidenceThreshold,
+      iouThreshold: this.iouThreshold,
+      frameCount: this.frameCount,
+      lastInferenceLatencyMs: this.lastInferenceLatencyMs,
+      lastDetectionsCount: this.lastDetectionsCount,
+      inputShape: this.inputDims,
+      outputShape: this.outputDims,
+      backend: 'wasm' as const,
     };
   }
 
@@ -151,42 +170,32 @@ export class YOLOv8DetectionService implements IAIDetectionService {
 
   /**
    * Configures ONNX Runtime Web for browser environments.
-   * Uses single-thread WASM to prevent SharedArrayBuffer / COOP issues in iframes.
+   * Uses single-thread WASM for maximum cross-browser compatibility.
    */
-  
+  private configureWasmEnvironment(): void {
+    if (typeof window !== 'undefined' && ort?.env?.wasm) {
+      ort.env.wasm.numThreads = 1;
+      ort.env.wasm.simd = true;
+      ort.env.wasm.proxy = false;
 
+      const origin = window.location.origin || '';
+      const wasmPrefix = `${origin}/wasm/`;
 
-private configureWasmEnvironment(): void {
-  if (typeof window !== 'undefined' && ort?.env?.wasm) {
-    // Disable worker threads for browser compatibility
-    ort.env.wasm.numThreads = 1;
+      ort.env.wasm.wasmPaths = {
+        mjs: `${wasmPrefix}ort-wasm-simd-threaded.mjs`,
+        wasm: `${wasmPrefix}ort-wasm-simd-threaded.wasm`,
+      };
 
-    // Explicitly specify matching ONNX Runtime 1.31.1 files
-    ort.env.wasm.wasmPaths = {
-      mjs: new URL(
-        '/wasm/ort-wasm-simd-threaded.mjs',
-        window.location.href
-      ).href,
-      wasm: new URL(
-        '/wasm/ort-wasm-simd-threaded.wasm',
-        window.location.href
-      ).href,
-    };
-
-    console.log('[YOLOv8Service] WASM configuration:', ort.env.wasm.wasmPaths);
+      console.log('[YOLOv8Service] ONNX Runtime Web configured:', ort.env.wasm.wasmPaths);
+    }
   }
-}
-
-
-
 
   /**
-   * Initializes and loads the YOLOv8 ONNX model session when weights are hosted,
-   * or cleanly activates the on-device Sobel morphology edge baseline if
-   * /models/yolov8n-road.onnx is not present on the server.
+   * Initializes and loads the YOLOv8 ONNX model session once and reuses it.
+   * If loading fails, sets status to 'error' and reports the exact failure.
    */
   public async loadModel(customPath?: string): Promise<boolean> {
-    if (this.isReady) {
+    if (this.session && this.status === 'ready') {
       return true;
     }
 
@@ -201,36 +210,34 @@ private configureWasmEnvironment(): void {
 
     this.loadingPromise = (async () => {
       try {
+        console.log(`[YOLOv8Service] Initializing road damage ONNX model from: ${targetPath}`);
+
         let modelBytes: Uint8Array | null = null;
 
-        if (typeof window !== 'undefined' && typeof fetch !== 'undefined') {
+        if (typeof fetch !== 'undefined') {
           const response = await fetch(targetPath);
-          const contentType = (response.headers.get('content-type') || '').toLowerCase();
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status} ${response.statusText} when fetching model weights from ${targetPath}`);
+          }
 
-          // Reject 404s and HTML/JSON fallback responses so they never reach WebAssembly/ONNX
-          if (
-            !response.ok ||
-            contentType.includes('text/html') ||
-            contentType.includes('application/json')
-          ) {
-            this.activateEdgeFallback(startLoad);
-            return true;
+          const contentType = (response.headers.get('content-type') || '').toLowerCase();
+          if (contentType.includes('text/html') || contentType.includes('application/json')) {
+            throw new Error(`Server returned '${contentType}' instead of binary ONNX weights for ${targetPath}`);
           }
 
           const buffer = await response.arrayBuffer();
           const bytes = new Uint8Array(buffer);
-          // Guard against HTML doctype ('<!do' -> 0x3c 0x21) or empty payloads
-          if (bytes.byteLength < 64 || (bytes[0] === 0x3c && (bytes[1] === 0x21 || bytes[1] === 0x68))) {
-            this.activateEdgeFallback(startLoad);
-            return true;
+
+          // Guard against HTML error pages or empty payload
+          if (bytes.byteLength < 1024 || (bytes[0] === 0x3c && (bytes[1] === 0x21 || bytes[1] === 0x68))) {
+            throw new Error(`Downloaded model file appears corrupted or is an HTML error page (${bytes.byteLength} bytes)`);
           }
 
           modelBytes = bytes;
         }
 
-        if (!modelBytes) {
-          this.activateEdgeFallback(startLoad);
-          return true;
+        if (!modelBytes || modelBytes.byteLength === 0) {
+          throw new Error(`Failed to read model bytes from ${targetPath}`);
         }
 
         const sessionOptions: ort.InferenceSession.SessionOptions = {
@@ -239,29 +246,44 @@ private configureWasmEnvironment(): void {
         };
 
         this.session = await ort.InferenceSession.create(modelBytes, sessionOptions);
-        this.usingEdgeFallback = false;
 
-        // Perform a lightweight warm-up inference to compile WASM kernels
+        if (this.session.inputNames.length > 0) {
+          this.inputTensorName = this.session.inputNames[0];
+        }
+        if (this.session.outputNames.length > 0) {
+          this.outputTensorName = this.session.outputNames[0];
+        }
+
+        // Lightweight warm-up inference to compile WASM kernels before real-time camera starts
         try {
           const warmUpTensor = new ort.Tensor(
             'float32',
             new Float32Array(1 * 3 * this.targetInputSize * this.targetInputSize),
             [1, 3, this.targetInputSize, this.targetInputSize]
           );
-          const inputName = this.session.inputNames[0] || 'images';
-          await this.session.run({ [inputName]: warmUpTensor });
+          const warmUpResults = await this.session.run({ [this.inputTensorName]: warmUpTensor });
+          const outTensor = warmUpResults[this.outputTensorName];
+          if (outTensor?.dims) {
+            this.outputDims = Array.from(outTensor.dims);
+          }
         } catch (warmUpErr) {
-          console.warn('[YOLOv8Service] Warm-up run non-fatal warning:', warmUpErr);
+          console.warn('[YOLOv8Service] Warm-up inference warning (non-fatal):', warmUpErr);
         }
 
         this.modelLoadTimeMs = Math.round(performance.now() - startLoad);
         this.status = 'ready';
         this.lastError = null;
+
+        console.log(
+          `[YOLOv8Service] YOLOv8 model loaded successfully in ${this.modelLoadTimeMs}ms. Inputs: [${this.inputTensorName}], Outputs: [${this.outputTensorName}] shape: ${JSON.stringify(this.outputDims)}`
+        );
         return true;
       } catch (err: any) {
-        console.warn('[YOLOv8Service] ONNX initialization skipped; using Sobel Edge Fallback:', err?.message || err);
-        this.activateEdgeFallback(startLoad);
-        return true;
+        this.session = null;
+        this.status = 'error';
+        this.lastError = err?.message || String(err);
+        console.error('[YOLOv8Service] YOLOv8 model loading failed:', this.lastError);
+        throw err;
       } finally {
         this.loadingPromise = null;
       }
@@ -270,27 +292,21 @@ private configureWasmEnvironment(): void {
     return this.loadingPromise;
   }
 
-  private activateEdgeFallback(startLoad: number): void {
-    this.session = null;
-    this.usingEdgeFallback = true;
-    this.status = 'ready';
-    this.lastError = null;
-    this.modelLoadTimeMs = Math.round(performance.now() - startLoad);
-  }
-
   /**
-   * Performs end-to-end detection on a camera frame or photo snapshot.
+   * Performs end-to-end detection on a camera frame, canvas, or photo snapshot.
    * Preprocesses image (letterbox + RGB normalization), runs ONNX inference,
    * decodes YOLOv8 outputs, executes NMS, and maps to D00-D40 road damage classes.
+   *
+   * Supports HTMLVideoElement directly to bypass unnecessary base64 conversions in live camera loops.
    */
   public async detectRoadProblems(
-    imageBase64: string,
+    source: DetectionInputSource,
     _mimeType: string = 'image/jpeg',
     mode: DetectionMode = 'both'
   ): Promise<DetectionResult> {
     const startTime = performance.now();
 
-    // If target mode is speed-only, YOLOv8 road damage model detects surface damage, not speeds
+    // Mode filter: YOLOv8 model detects surface damage, not vehicle speeds
     if (mode === 'speed') {
       return {
         detected: false,
@@ -300,29 +316,44 @@ private configureWasmEnvironment(): void {
       };
     }
 
-    if (!imageBase64) {
-      throw new Error('[YOLOv8Service] detectRoadProblems called with empty image data.');
+    if (!source) {
+      throw new Error('[YOLOv8Service] detectRoadProblems called with empty input source.');
     }
 
-    // Ensure model or deterministic edge baseline is ready
-    if (!this.isReady) {
-      await this.loadModel();
+    // Ensure model session is ready
+    if (!this.session) {
+      if (this.status !== 'loading') {
+        await this.loadModel();
+      } else if (this.loadingPromise) {
+        await this.loadingPromise;
+      }
     }
 
     if (!this.session) {
-      return this.detectWithEdgeSobelFallback(imageBase64, startTime);
+      throw new Error(`[YOLOv8Service] ONNX session unavailable. Current status: ${this.status}. Error: ${this.lastError || 'None'}`);
     }
 
+    // Prevent overlapping inference calls
+    if (this.isInferring) {
+      return {
+        detected: false,
+        objects: [],
+        latencyMs: 0,
+        modelUsed: `${this.id} (skipped: concurrent inference in progress)`,
+      };
+    }
+
+    this.isInferring = true;
     try {
       // 1. Preprocessing: Letterbox resize to 640x640 and normalize RGB float32
-      const { tensor, origW, origH, scale, padX, padY } = await this.preprocessImage(imageBase64);
+      const { tensor, origW, origH, scale, padX, padY } = await this.preprocessImage(source);
 
       // 2. Inference execution
-      const inputName = this.session.inputNames[0] || 'images';
+      const inputName = this.inputTensorName || this.session.inputNames[0] || 'images';
       const results = await this.session.run({ [inputName]: tensor });
 
       // 3. Extract output tensor
-      const outputName = this.session.outputNames[0] || 'output0';
+      const outputName = this.outputTensorName || this.session.outputNames[0] || 'output0';
       const outputTensor = results[outputName];
       if (!outputTensor) {
         throw new Error(
@@ -331,15 +362,12 @@ private configureWasmEnvironment(): void {
       }
 
       const outputData = outputTensor.data as Float32Array;
-      
-      console.log('[YOLOv8Service] Output tensor length:', outputData.length);
-      console.log(
-      '[YOLOv8Service] Actual output shape:',
-      JSON.stringify(Array.from(outputTensor.dims))
-      );
+      const dims = Array.from(outputTensor.dims);
+
       // 4. Output decoding and Non-Maximum Suppression (NMS)
-      const detectedObjects = this.postprocess(
+      let detectedObjects = this.postprocess(
         outputData,
+        dims,
         origW,
         origH,
         scale,
@@ -347,7 +375,28 @@ private configureWasmEnvironment(): void {
         padY
       );
 
+      // Filter by mode
+      if (mode === 'potholes') {
+        detectedObjects = detectedObjects.filter((o) => o.type === 'pothole');
+      }
+
       const latencyMs = Math.round(performance.now() - startTime);
+
+      // Update real telemetry
+      this.frameCount++;
+      this.lastInferenceLatencyMs = latencyMs;
+      this.lastDetectionsCount = detectedObjects.length;
+
+      // Throttled logging: log on frame 1, every 100 frames, or occasionally when damage detected
+      if (
+        this.frameCount === 1 ||
+        this.frameCount % 100 === 0 ||
+        (detectedObjects.length > 0 && this.frameCount % 25 === 0)
+      ) {
+        console.log(
+          `[YOLOv8Service] Frame #${this.frameCount} (${latencyMs}ms): ${detectedObjects.length} road damage detection(s) [threshold=${this.confidenceThreshold}]`
+        );
+      }
 
       return {
         detected: detectedObjects.length > 0,
@@ -358,14 +407,17 @@ private configureWasmEnvironment(): void {
     } catch (err: any) {
       console.error('[YOLOv8Service] Detection error during inference:', err);
       throw new Error(`YOLOv8 Detection Failed: ${err?.message || 'Unknown inference error'}`);
+    } finally {
+      this.isInferring = false;
     }
   }
 
   /**
-   * Preprocesses an image into a letterboxed 1x3x640x640 Float32Array tensor.
+   * Preprocesses an input source (video, canvas, image, base64) into a letterboxed
+   * 1x3x640x640 Float32Array tensor.
    * Maintains original aspect ratio with padding and normalizes RGB values to [0.0, 1.0].
    */
-  public async preprocessImage(imageBase64: string): Promise<{
+  public async preprocessImage(source: DetectionInputSource): Promise<{
     tensor: ort.Tensor;
     origW: number;
     origH: number;
@@ -373,9 +425,50 @@ private configureWasmEnvironment(): void {
     padX: number;
     padY: number;
   }> {
-    const img = await this.loadImage(imageBase64);
-    const origW = img.naturalWidth || img.width || 640;
-    const origH = img.naturalHeight || img.height || 640;
+    let drawable: CanvasImageSource | null = null;
+    let origW = 640;
+    let origH = 640;
+
+    if (typeof source === 'string') {
+      const img = await this.loadImage(source);
+      origW = img.naturalWidth || img.width || 640;
+      origH = img.naturalHeight || img.height || 640;
+      drawable = img;
+    } else if (typeof HTMLVideoElement !== 'undefined' && source instanceof HTMLVideoElement) {
+      origW = source.videoWidth;
+      origH = source.videoHeight;
+      if (!origW || !origH) {
+        throw new Error('[YOLOv8Service] Video frame dimensions are 0x0. Camera may not have finished starting.');
+      }
+      drawable = source;
+    } else if (typeof HTMLCanvasElement !== 'undefined' && source instanceof HTMLCanvasElement) {
+      origW = source.width;
+      origH = source.height;
+      drawable = source;
+    } else if (typeof ImageBitmap !== 'undefined' && source instanceof ImageBitmap) {
+      origW = source.width;
+      origH = source.height;
+      drawable = source;
+    } else if (typeof HTMLImageElement !== 'undefined' && source instanceof HTMLImageElement) {
+      origW = source.naturalWidth || source.width || 640;
+      origH = source.naturalHeight || source.height || 640;
+      drawable = source;
+    } else if (typeof ImageData !== 'undefined' && source instanceof ImageData) {
+      origW = source.width;
+      origH = source.height;
+      const tempCanvas = document.createElement('canvas');
+      tempCanvas.width = origW;
+      tempCanvas.height = origH;
+      const tempCtx = tempCanvas.getContext('2d');
+      if (tempCtx) {
+        tempCtx.putImageData(source, 0, 0);
+        drawable = tempCanvas;
+      }
+    }
+
+    if (!drawable) {
+      throw new Error('[YOLOv8Service] Unsupported or invalid image source passed to preprocessImage.');
+    }
 
     const targetSize = this.targetInputSize;
     const scale = Math.min(targetSize / origW, targetSize / origH);
@@ -384,19 +477,23 @@ private configureWasmEnvironment(): void {
     const padX = Math.floor((targetSize - scaledW) / 2);
     const padY = Math.floor((targetSize - scaledH) / 2);
 
-    // Create offscreen canvas for letterboxing
-    const canvas =
-      typeof OffscreenCanvas !== 'undefined'
-        ? new OffscreenCanvas(targetSize, targetSize)
-        : document.createElement('canvas');
-    canvas.width = targetSize;
-    canvas.height = targetSize;
+    // Reuse offscreen canvas with willReadFrequently optimization
+    if (!this.offscreenCanvas) {
+      if (typeof OffscreenCanvas !== 'undefined') {
+        this.offscreenCanvas = new OffscreenCanvas(targetSize, targetSize);
+      } else if (typeof document !== 'undefined') {
+        const c = document.createElement('canvas');
+        c.width = targetSize;
+        c.height = targetSize;
+        this.offscreenCanvas = c;
+      }
+    }
 
-    const ctx = canvas.getContext('2d') as
-      | CanvasRenderingContext2D
-      | OffscreenCanvasRenderingContext2D
-      | null;
+    if (!this.offscreenCtx && this.offscreenCanvas) {
+      this.offscreenCtx = this.offscreenCanvas.getContext('2d', { willReadFrequently: true }) as any;
+    }
 
+    const ctx = this.offscreenCtx;
     if (!ctx) {
       throw new Error('[YOLOv8Service] Failed to obtain 2D rendering context for preprocessing.');
     }
@@ -406,57 +503,58 @@ private configureWasmEnvironment(): void {
     ctx.fillRect(0, 0, targetSize, targetSize);
 
     // Draw scaled image centered in the canvas
-    ctx.drawImage(img, padX, padY, scaledW, scaledH);
+    ctx.drawImage(drawable, padX, padY, scaledW, scaledH);
 
     const imageData = ctx.getImageData(0, 0, targetSize, targetSize);
     const rgba = imageData.data;
     const numPixels = targetSize * targetSize;
 
-    // Convert RGBA HWC to NCHW Float32Array [1, 3, 640, 640] with RGB in [0.0, 1.0]
-    const floatData = new Float32Array(3 * numPixels);
+    // Convert RGBA HWC to RGB Planar NCHW Float32Array [1, 3, 640, 640] normalized to [0.0, 1.0]
+    const floatData = this.inputBuffer;
     const channelOffsetG = numPixels;
     const channelOffsetB = numPixels * 2;
 
     for (let i = 0; i < numPixels; i++) {
-      const r = rgba[i * 4] / 255.0;
-      const g = rgba[i * 4 + 1] / 255.0;
-      const b = rgba[i * 4 + 2] / 255.0;
-
-      floatData[i] = r;
-      floatData[channelOffsetG + i] = g;
-      floatData[channelOffsetB + i] = b;
+      const i4 = i * 4;
+      floatData[i] = rgba[i4] / 255.0;                     // R channel
+      floatData[channelOffsetG + i] = rgba[i4 + 1] / 255.0; // G channel
+      floatData[channelOffsetB + i] = rgba[i4 + 2] / 255.0; // B channel
     }
 
     const tensor = new ort.Tensor('float32', floatData, [1, 3, targetSize, targetSize]);
-
     return { tensor, origW, origH, scale, padX, padY };
   }
 
   /**
-   * Decodes the raw [1, 8, 8400] output tensor, maps back to original image coordinates,
-   * applies non-maximum suppression (NMS), and generates DetectedObject records.
+   * Decodes the raw output tensor, dynamically handles channel ordering,
+   * maps back to original image coordinates, applies NMS, and creates DetectedObject records.
    */
   private postprocess(
     outputData: Float32Array,
+    dims: number[],
     origW: number,
     origH: number,
     scale: number,
     padX: number,
     padY: number
   ): DetectedObject[] {
-    const numAnchors = 8400; // 640x640 features: 80x80 + 40x40 + 20x20
     const numClasses = 4; // D00, D10, D20, D40
     const rawCandidates: RawDetection[] = [];
 
-    // Parse each anchor column
+    // Support both [1, 8, 8400] (channels-first) and [1, 8400, 8] (channels-last)
+    const isChannelsFirst = dims.length >= 3 && dims[1] === 4 + numClasses;
+    const numAnchors = isChannelsFirst ? dims[2] : (dims[1] || 8400);
+
+    // Parse each anchor
     for (let col = 0; col < numAnchors; col++) {
-      // Find the best class prediction for this anchor
       let maxScore = -1;
       let bestClass = -1;
 
       for (let c = 0; c < numClasses; c++) {
-        // Class scores start at row index 4 (rows 0..3 are cx, cy, w, h)
-        const score = outputData[(4 + c) * numAnchors + col];
+        const score = isChannelsFirst
+          ? outputData[(4 + c) * numAnchors + col]
+          : outputData[col * (4 + numClasses) + (4 + c)];
+
         if (score > maxScore) {
           maxScore = score;
           bestClass = c;
@@ -465,10 +563,18 @@ private configureWasmEnvironment(): void {
 
       // Filter by confidence threshold
       if (maxScore >= this.confidenceThreshold && bestClass >= 0) {
-        const cx = outputData[0 * numAnchors + col];
-        const cy = outputData[1 * numAnchors + col];
-        const w = outputData[2 * numAnchors + col];
-        const h = outputData[3 * numAnchors + col];
+        const cx = isChannelsFirst
+          ? outputData[0 * numAnchors + col]
+          : outputData[col * (4 + numClasses) + 0];
+        const cy = isChannelsFirst
+          ? outputData[1 * numAnchors + col]
+          : outputData[col * (4 + numClasses) + 1];
+        const w = isChannelsFirst
+          ? outputData[2 * numAnchors + col]
+          : outputData[col * (4 + numClasses) + 2];
+        const h = isChannelsFirst
+          ? outputData[3 * numAnchors + col]
+          : outputData[col * (4 + numClasses) + 3];
 
         // Box in letterboxed 640x640 space
         const x1_640 = cx - w / 2;
@@ -482,8 +588,8 @@ private configureWasmEnvironment(): void {
         const origX2 = Math.max(0, Math.min(origW, (x2_640 - padX) / scale));
         const origY2 = Math.max(0, Math.min(origH, (y2_640 - padY) / scale));
 
-        // Skip degenerate boxes
-        if (origX2 > origX1 && origY2 > origY1) {
+        // Skip degenerate boxes (must have at least 4x4 pixels)
+        if (origX2 - origX1 >= 4 && origY2 - origY1 >= 4) {
           rawCandidates.push({
             x1: origX1,
             y1: origY1,
@@ -524,8 +630,8 @@ private configureWasmEnvironment(): void {
       let severity: SeverityLevel = classInfo.defaultSeverity;
 
       if (classInfo.code === 'D40' || classInfo.code === 'D20') {
-        // Potholes and Alligator cracks are severe road safety defects
-        severity = box.score > 0.35 || boxAreaRatio > 0.02 ? 'high' : 'medium';
+        // Potholes and Alligator cracks are high road safety concerns
+        severity = box.score > 0.45 || boxAreaRatio > 0.02 ? 'high' : 'medium';
       } else {
         // D00 (Longitudinal) and D10 (Transverse) cracks
         if (boxAreaRatio > 0.05 || box.score > 0.7) {
@@ -563,7 +669,6 @@ private configureWasmEnvironment(): void {
 
       let keep = true;
       for (const prev of selected) {
-        // Per-class NMS (or cross-class if high overlap)
         const iou = this.computeIoU(box, prev);
         if (box.classId === prev.classId) {
           if (iou > iouThreshold) {
@@ -607,7 +712,7 @@ private configureWasmEnvironment(): void {
   }
 
   /**
-   * Loads an image element from base64 data string.
+   * Loads an image element from a base64 data string or URL.
    */
   private loadImage(imageBase64: string): Promise<HTMLImageElement> {
     return new Promise((resolve, reject) => {
@@ -622,61 +727,6 @@ private configureWasmEnvironment(): void {
         : `data:image/jpeg;base64,${imageBase64}`;
       img.src = src;
     });
-  }
-  /**
-   * Deterministic on-device pixel-level Sobel + connected-component fallback
-   * when /models/yolov8n-road.onnx weights are not hosted.
-   */
-  private async detectWithEdgeSobelFallback(
-    imageBase64: string,
-    startTime: number
-  ): Promise<DetectionResult> {
-    const morph = await extractRoadPixelMorphology(imageBase64);
-    const objects: DetectedObject[] = [];
-
-    if (morph.darkClusterBox) {
-      if (morph.elongatedVerticalScore > 0.35) {
-        const conf = Number(Math.min(0.92, 0.58 + morph.elongatedVerticalScore * 0.3).toFixed(3));
-        const sev = computeValidatedSeverity('road_crack', morph.darkClusterBox, conf, 'D00 Longitudinal Crack');
-        objects.push({
-          type: 'road_crack',
-          confidence: conf,
-          severity: sev.severityTier,
-          description: '[D00 - Longitudinal Crack] Edge Sobel vertical fracture detected',
-          box2d: morph.darkClusterBox,
-        });
-      } else if (morph.elongatedHorizontalScore > 0.35) {
-        const conf = Number(Math.min(0.90, 0.56 + morph.elongatedHorizontalScore * 0.28).toFixed(3));
-        const sev = computeValidatedSeverity('road_crack', morph.darkClusterBox, conf, 'D10 Transverse Crack');
-        objects.push({
-          type: 'road_crack',
-          confidence: conf,
-          severity: sev.severityTier,
-          description: '[D10 - Transverse Crack] Edge Sobel horizontal discontinuity detected',
-          box2d: morph.darkClusterBox,
-        });
-      } else if (morph.darkClusterDensity > 0.38 || morph.meanGradient > 18) {
-        const isWeb = morph.darkClusterDensity < 0.52 && morph.meanGradient > 20;
-        const conf = Number(Math.min(0.89, 0.60 + morph.darkClusterDensity * 0.32).toFixed(3));
-        const label = isWeb ? '[D20 - Alligator Crack] High-gradient edge cluster' : '[D40 - Pothole] Dark cavity region';
-        const type = isWeb ? 'road_crack' : 'pothole';
-        const sev = computeValidatedSeverity(type, morph.darkClusterBox, conf, label);
-        objects.push({
-          type,
-          confidence: conf,
-          severity: sev.severityTier,
-          description: label,
-          box2d: morph.darkClusterBox,
-        });
-      }
-    }
-
-    return {
-      detected: objects.length > 0,
-      objects,
-      latencyMs: Math.max(1, Math.round(performance.now() - startTime)),
-      modelUsed: `${this.id} (Edge Sobel Fallback - D00/D10/D20/D40)`,
-    };
   }
 }
 

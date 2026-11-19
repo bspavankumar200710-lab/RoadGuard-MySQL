@@ -1,4 +1,4 @@
-import { IAIDetectionService } from './aiDetectionService';
+import { IAIDetectionService, DetectionInputSource } from './aiDetectionService';
 import { DetectionResult, DetectionMode } from '../types/detection';
 import { analyzeFrameLocally } from './localImageAnalyzer';
 import { agentLearningService } from './agentLearningService';
@@ -14,11 +14,28 @@ export class GeminiDetectionService implements IAIDetectionService {
    * injecting learned feedback and mistake corrections dynamically.
    */
   public async detectRoadProblems(
-    imageBase64: string,
+    source: DetectionInputSource,
     mimeType: string = 'image/jpeg',
     mode: DetectionMode = 'both'
   ): Promise<DetectionResult> {
     const startTime = performance.now();
+    let imageBase64: string;
+
+    if (typeof source === 'string') {
+      imageBase64 = source;
+    } else if (typeof HTMLVideoElement !== 'undefined' && source instanceof HTMLVideoElement) {
+      const canvas = document.createElement('canvas');
+      canvas.width = source.videoWidth || 640;
+      canvas.height = source.videoHeight || 480;
+      const ctx = canvas.getContext('2d');
+      if (ctx) ctx.drawImage(source, 0, 0, canvas.width, canvas.height);
+      imageBase64 = canvas.toDataURL(mimeType, 0.85);
+    } else if (typeof HTMLCanvasElement !== 'undefined' && source instanceof HTMLCanvasElement) {
+      imageBase64 = source.toDataURL(mimeType, 0.85);
+    } else {
+      imageBase64 = '';
+    }
+
     const learnedDirectives = agentLearningService.getLearnedPromptDirectives();
 
     try {

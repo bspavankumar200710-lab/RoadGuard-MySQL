@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import {
   RoadHazardRecord,
   DetectedObject,
+  DetectionResult,
   GPSStatus,
   CameraStatus,
   HazardType,
@@ -50,6 +51,88 @@ import {
 } from 'lucide-react';
 import { driveSessionService, DriveSummary } from '../services/driveSessionService';
 
+interface SmoothedDetection extends DetectedObject {
+  id: string;
+  lastSeenTime: number;
+}
+
+function computeBox2dIoU(
+  a: [number, number, number, number],
+  b: [number, number, number, number]
+): number {
+  const ymin = Math.max(a[0], b[0]);
+  const xmin = Math.max(a[1], b[1]);
+  const ymax = Math.min(a[2], b[2]);
+  const xmax = Math.min(a[3], b[3]);
+
+  const w = Math.max(0, xmax - xmin);
+  const h = Math.max(0, ymax - ymin);
+  const intersection = w * h;
+
+  const areaA = (a[2] - a[0]) * (a[3] - a[1]);
+  const areaB = (b[2] - b[0]) * (b[3] - b[1]);
+  const union = areaA + areaB - intersection;
+
+  return union > 0 ? intersection / union : 0;
+}
+
+function computeCoverBoundingBox(
+  box2d: [number, number, number, number],
+  videoWidth: number,
+  videoHeight: number,
+  containerWidth: number,
+  containerHeight: number
+): React.CSSProperties {
+  const [ymin, xmin, ymax, xmax] = box2d;
+  if (!videoWidth || !videoHeight || !containerWidth || !containerHeight) {
+    return {
+      top: `${ymin / 10}%`,
+      left: `${xmin / 10}%`,
+      width: `${Math.max(2, (xmax - xmin) / 10)}%`,
+      height: `${Math.max(2, (ymax - ymin) / 10)}%`,
+    };
+  }
+
+  const videoAspect = videoWidth / videoHeight;
+  const containerAspect = containerWidth / containerHeight;
+
+  let renderedWidth: number;
+  let renderedHeight: number;
+  let offsetX: number;
+  let offsetY: number;
+
+  if (videoAspect > containerAspect) {
+    // Video is wider than container: matches container height, cropped horizontally
+    renderedHeight = containerHeight;
+    renderedWidth = containerHeight * videoAspect;
+    offsetX = (containerWidth - renderedWidth) / 2;
+    offsetY = 0;
+  } else {
+    // Video is taller than container: matches container width, cropped vertically
+    renderedWidth = containerWidth;
+    renderedHeight = containerWidth / videoAspect;
+    offsetX = 0;
+    offsetY = (containerHeight - renderedHeight) / 2;
+  }
+
+  const x1Norm = xmin / 1000;
+  const y1Norm = ymin / 1000;
+  const x2Norm = xmax / 1000;
+  const y2Norm = ymax / 1000;
+
+  const pixelLeft = offsetX + x1Norm * renderedWidth;
+  const pixelTop = offsetY + y1Norm * renderedHeight;
+  const pixelWidth = Math.max(16, (x2Norm - x1Norm) * renderedWidth);
+  const pixelHeight = Math.max(16, (y2Norm - y1Norm) * renderedHeight);
+
+  return {
+    top: `${(pixelTop / containerHeight) * 100}%`,
+    left: `${(pixelLeft / containerWidth) * 100}%`,
+    width: `${(pixelWidth / containerWidth) * 100}%`,
+    height: `${(pixelHeight / containerHeight) * 100}%`,
+  };
+}
+
 interface MonitorPageProps {
   isMonitoring: boolean;
   onToggleMonitoring: (start: boolean) => void;
@@ -68,8 +151,22 @@ export const MonitorPage: React.FC<MonitorPageProps> = ({
   const { userProfile, updatePreferredMode } = useAuth();
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const captureTimerRef = useRef<any>(null);
+  const isMonitoringRef = useRef<boolean>(isMonitoring);
+  const isAnalyzingRef = useRef<boolean>(false);
+  const smoothedDetectionsRef = useRef<SmoothedDetection[]>([]);
+
+  // Layout & Video Dimensions for surgical bounding box alignment
+  const [containerDimensions, setContainerDimensions] = useState<{ width: number; height: number }>({
+    width: 0,
+    height: 0,
+  });
+  const [videoDimensions, setVideoDimensions] = useState<{ width: number; height: number }>({
+    width: 0,
+    height: 0,
+  });
 
   // Status & Device States
   const [cameraStatus, setCameraStatus] = useState<CameraStatus>('idle');
@@ -108,6 +205,37 @@ export const MonitorPage: React.FC<MonitorPageProps> = ({
   );
   const [yoloStatus, setYoloStatus] = useState(() => yoloV8DetectionService.getStatus());
 
+  // Keep isMonitoringRef synchronized
+  useEffect(() => {
+    isMonitoringRef.current = isMonitoring;
+  }, [isMonitoring]);
+
+  // Track container dimensions via ResizeObserver
+  useEffect(() => {
+    if (!containerRef.current) return;
+    const updateSize = () => {
+      if (containerRef.current) {
+        setContainerDimensions({
+          width: containerRef.current.clientWidth,
+          height: containerRef.current.clientHeight,
+        });
+      }
+    };
+    updateSize();
+    const observer = new ResizeObserver(updateSize);
+    observer.observe(containerRef.current);
+    return () => observer.disconnect();
+  }, []);
+
+  const handleLoadedMetadata = () => {
+    if (videoRef.current) {
+      setVideoDimensions({
+        width: videoRef.current.videoWidth || 1280,
+        height: videoRef.current.videoHeight || 720,
+      });
+    }
+  };
+
   // Listen to detector switches across the app
   useEffect(() => {
     const unsub = detectorRegistry.subscribe(() => {
@@ -117,11 +245,11 @@ export const MonitorPage: React.FC<MonitorPageProps> = ({
     return unsub;
   }, []);
 
-  // Poll YOLOv8 status while loading
+  // Poll YOLOv8 status while loading or active
   useEffect(() => {
     const interval = setInterval(() => {
       setYoloStatus(yoloV8DetectionService.getStatus());
-    }, 1500);
+    }, 1200);
     return () => clearInterval(interval);
   }, []);
 
@@ -132,6 +260,7 @@ export const MonitorPage: React.FC<MonitorPageProps> = ({
         .loadModel()
         .then(() => {
           setYoloStatus(yoloV8DetectionService.getStatus());
+          setAnalysisError(null);
         })
         .catch((err) => {
           setYoloStatus(yoloV8DetectionService.getStatus());
@@ -209,6 +338,7 @@ export const MonitorPage: React.FC<MonitorPageProps> = ({
 
       if (streamRef.current) {
         streamRef.current.getTracks().forEach((track) => track.stop());
+        streamRef.current = null;
       }
 
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -228,6 +358,12 @@ export const MonitorPage: React.FC<MonitorPageProps> = ({
 
       const videoTrack = stream.getVideoTracks()[0];
       if (videoTrack) {
+        videoTrack.onended = () => {
+          console.warn('[MonitorPage] Camera track ended or device disconnected.');
+          setCameraStatus('denied');
+          setCameraError('Camera stream was closed or disconnected.');
+        };
+
         try {
           const capabilities = (videoTrack.getCapabilities ? videoTrack.getCapabilities() : {}) as any;
           if (capabilities && 'torch' in capabilities) {
@@ -243,15 +379,21 @@ export const MonitorPage: React.FC<MonitorPageProps> = ({
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
+        setVideoDimensions({
+          width: videoRef.current.videoWidth || 1280,
+          height: videoRef.current.videoHeight || 720,
+        });
       }
       setCameraStatus('active');
     } catch (err: any) {
-      console.warn('Camera access denied or error:', err);
+      console.warn('[MonitorPage] Camera access denied or error:', err);
       setCameraStatus('denied');
       if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
         setCameraError('Camera permission was denied. Please allow camera access in your browser settings.');
       } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
         setCameraError('No video camera was detected on this device.');
+      } else if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
+        setCameraError('Camera is currently in use by another application.');
       } else {
         setCameraError(err.message || 'Unable to access camera.');
       }
@@ -286,54 +428,121 @@ export const MonitorPage: React.FC<MonitorPageProps> = ({
     }
   }, [facingMode]);
 
-  useEffect(() => {
-    if (isMonitoring) {
-      startCamera();
-      locationService.startTracking();
-    } else {
-      if (captureTimerRef.current) {
-        clearTimeout(captureTimerRef.current);
-        captureTimerRef.current = null;
-      }
-      stopCamera();
-    }
-    return () => {
-      if (captureTimerRef.current) {
-        clearTimeout(captureTimerRef.current);
-      }
-    };
-  }, [isMonitoring, startCamera, stopCamera]);
-
   // Frame Capture and AI Processing Loop
   const captureAndAnalyzeFrame = useCallback(async () => {
-    if (!isMonitoring || isAnalyzingFrame || !videoRef.current || videoRef.current.readyState < 2) {
+    if (
+      !isMonitoringRef.current ||
+      isAnalyzingRef.current ||
+      !videoRef.current ||
+      videoRef.current.readyState < 2
+    ) {
+      return;
+    }
+
+    const video = videoRef.current;
+    if (video.videoWidth === 0 || video.videoHeight === 0) {
+      if (isMonitoringRef.current) {
+        captureTimerRef.current = setTimeout(captureAndAnalyzeFrame, 150);
+      }
       return;
     }
 
     try {
+      isAnalyzingRef.current = true;
       setIsAnalyzingFrame(true);
       setAnalysisError(null);
 
-      const video = videoRef.current;
-      const canvas = canvasRef.current || document.createElement('canvas');
-      canvas.width = 720; // High resolution frame for high-precision pothole & car speed analysis
-      canvas.height = 480;
-      const ctx = canvas.getContext('2d');
-
-      if (!ctx) return;
-
-      // Draw high resolution frame
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-      const imageBase64 = canvas.toDataURL('image/jpeg', 0.88);
-
       setLastFrameTime(Date.now());
 
-      // Query active detector model (YOLOv8-nano ONNX Edge or Gemini Flash Vision)
-      const activeDetector = detectorRegistry.getActiveDetector();
-      const result = await activeDetector.detectRoadProblems(imageBase64, 'image/jpeg', detectionMode);
+      let result: DetectionResult;
+      const isYolo = activeDetectorId === 'yolov8-nano';
 
+      if (isYolo) {
+        // Direct zero-copy video frame detection (bypasses base64 encoding/decoding)
+        result = await yoloV8DetectionService.detectRoadProblems(video, 'image/jpeg', detectionMode);
+      } else {
+        // Gemini API requires base64 encoded snapshot
+        const canvas = canvasRef.current || document.createElement('canvas');
+        canvas.width = 720;
+        canvas.height = 480;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          const imageBase64 = canvas.toDataURL('image/jpeg', 0.85);
+          const activeDetector = detectorRegistry.getActiveDetector();
+          result = await activeDetector.detectRoadProblems(imageBase64, 'image/jpeg', detectionMode);
+        } else {
+          result = { detected: false, objects: [] };
+        }
+      }
+
+      // Check if monitoring was stopped while inference was in flight
+      if (!isMonitoringRef.current) {
+        return;
+      }
+
+      // Synchronize YOLOv8 telemetry status
+      if (isYolo) {
+        setYoloStatus(yoloV8DetectionService.getStatus());
+      }
+
+      // Process and smooth bounding boxes
       if (result.detected && result.objects.length > 0) {
-        setCurrentDetections(result.objects);
+        const now = Date.now();
+        const existing = [...smoothedDetectionsRef.current];
+        const updatedList: SmoothedDetection[] = [];
+
+        for (const newObj of result.objects) {
+          if (!newObj.box2d) continue;
+
+          let matchedIdx = -1;
+          let bestIoU = 0.35;
+          for (let i = 0; i < existing.length; i++) {
+            if (existing[i].type === newObj.type && existing[i].box2d) {
+              const iou = computeBox2dIoU(existing[i].box2d!, newObj.box2d);
+              if (iou > bestIoU) {
+                bestIoU = iou;
+                matchedIdx = i;
+              }
+            }
+          }
+
+          if (matchedIdx >= 0) {
+            const prev = existing[matchedIdx];
+            const smoothedBox: [number, number, number, number] = [
+              Math.round(prev.box2d![0] * 0.4 + newObj.box2d[0] * 0.6),
+              Math.round(prev.box2d![1] * 0.4 + newObj.box2d[1] * 0.6),
+              Math.round(prev.box2d![2] * 0.4 + newObj.box2d[2] * 0.6),
+              Math.round(prev.box2d![3] * 0.4 + newObj.box2d[3] * 0.6),
+            ];
+            updatedList.push({
+              ...newObj,
+              box2d: smoothedBox,
+              id: prev.id,
+              lastSeenTime: now,
+            });
+            existing.splice(matchedIdx, 1);
+          } else {
+            updatedList.push({
+              ...newObj,
+              id: `det-${now}-${Math.random().toString(36).slice(2, 7)}`,
+              lastSeenTime: now,
+            });
+          }
+        }
+
+        // Retain disappearing detections for up to 350ms to eliminate flicker
+        for (const prev of existing) {
+          if (now - prev.lastSeenTime < 350) {
+            updatedList.push(prev);
+          }
+        }
+
+        smoothedDetectionsRef.current = updatedList;
+        setCurrentDetections(updatedList);
+
+        // Persistent saving for verified non-duplicate detections
+        let savedFrameBase64: string | null = null;
 
         for (const obj of result.objects) {
           // Suppress if matches learned mistake rule
@@ -348,7 +557,7 @@ export const MonitorPage: React.FC<MonitorPageProps> = ({
           const damageClass = imageStorageService.extractDamageClass(obj);
           const damageName = imageStorageService.resolveDamageName(damageClass, obj.type);
 
-          // Duplicate detection suppression: prevent repeated reports for the same damage in live video
+          // Duplicate detection suppression
           const isDuplicate = imageStorageService.isDuplicateDetection(
             obj.type,
             damageClass,
@@ -358,11 +567,10 @@ export const MonitorPage: React.FC<MonitorPageProps> = ({
           );
 
           if (isDuplicate) {
-            // Still provide brief audio/chime if speed changed, but avoid spamming Storage
             continue;
           }
 
-          // Spoken voice announcement & Audio alerts
+          // Spoken voice & chimes
           if (soundEnabled) {
             if (obj.type === 'vehicle_speed') {
               audioAlertService.announceDetection(
@@ -375,64 +583,95 @@ export const MonitorPage: React.FC<MonitorPageProps> = ({
             }
           }
 
-          // Persistent Database Storage ( Storage original + annotated + Cloud MySQL)
-          const record = await detectionService.addDetection({
-            type: obj.type,
-            damageClass,
-            damageName,
-            confidence: obj.confidence,
-            severity: obj.severity,
-            description: obj.description,
-            latitude: lat,
-            longitude: lng,
-            locationName: locationHint,
-            imageUrl: imageBase64,
-            imageSource: 'live_camera',
-            aiEngine: activeDetectorId,
-            verificationStatus: 'pending',
-            box2d: obj.box2d,
-            vehicleType: obj.vehicleType,
-            estimatedSpeedKmh: obj.estimatedSpeedKmh,
-            speedLimitKmh: obj.speedLimitKmh,
-            isOverSpeed: obj.isOverSpeed,
-          });
+          // Capture photo ONLY when saving is required
+          if (!savedFrameBase64) {
+            const snapCanvas = canvasRef.current || document.createElement('canvas');
+            snapCanvas.width = video.videoWidth || 1280;
+            snapCanvas.height = video.videoHeight || 720;
+            const snapCtx = snapCanvas.getContext('2d');
+            if (snapCtx) {
+              snapCtx.drawImage(video, 0, 0, snapCanvas.width, snapCanvas.height);
+              savedFrameBase64 = snapCanvas.toDataURL('image/jpeg', 0.85);
+            }
+          }
 
-          setLatestSavedRecord(record);
-          driveSessionService.addHazardToSession(record);
+          if (savedFrameBase64) {
+            const record = await detectionService.addDetection({
+              type: obj.type,
+              damageClass,
+              damageName,
+              confidence: obj.confidence,
+              severity: obj.severity,
+              description: obj.description,
+              latitude: lat,
+              longitude: lng,
+              locationName: locationHint,
+              imageUrl: savedFrameBase64,
+              imageSource: 'live_camera',
+              aiEngine: activeDetectorId,
+              verificationStatus: 'pending',
+              box2d: obj.box2d,
+              vehicleType: obj.vehicleType,
+              estimatedSpeedKmh: obj.estimatedSpeedKmh,
+              speedLimitKmh: obj.speedLimitKmh,
+              isOverSpeed: obj.isOverSpeed,
+            });
 
-          // Toast banner notification
-          if (obj.type === 'vehicle_speed') {
-            showNotification(`🏎️ ${damageName} (${damageClass}) • Cloud Photo Saved`);
-          } else {
-            showNotification(`🚨 ${damageClass}: ${damageName} at ${locationHint} • Cloud Report Saved`);
+            setLatestSavedRecord(record);
+            driveSessionService.addHazardToSession(record);
+
+            if (obj.type === 'vehicle_speed') {
+              showNotification(`🏎️ ${damageName} (${damageClass}) • Saved to Database`);
+            } else {
+              showNotification(`🚨 ${damageClass}: ${damageName} at ${locationHint} • Saved`);
+            }
           }
         }
       } else {
-        setCurrentDetections([]);
+        // Smoothly fade out detections
+        const now = Date.now();
+        const unexpired = smoothedDetectionsRef.current.filter((d) => now - d.lastSeenTime < 350);
+        smoothedDetectionsRef.current = unexpired;
+        setCurrentDetections(unexpired);
       }
     } catch (err: any) {
-      console.warn('Frame processing cycle error:', err);
+      console.warn('[MonitorPage] Frame inference cycle error:', err);
       setAnalysisError(err?.message || 'Frame analysis cycle failed');
     } finally {
+      isAnalyzingRef.current = false;
       setIsAnalyzingFrame(false);
 
-      if (isMonitoring) {
-        const nextDelayMs = activeDetectorId === 'gemini-vision' ? 4500 : 1400;
+      if (isMonitoringRef.current) {
+        // Controlled frame rate: ~130ms for YOLOv8 (yielding ~7-8 FPS), 4500ms for Gemini
+        const nextDelayMs = activeDetectorId === 'gemini-vision' ? 4500 : 130;
         captureTimerRef.current = setTimeout(captureAndAnalyzeFrame, nextDelayMs);
       }
     }
-  }, [isMonitoring, isAnalyzingFrame, gpsCoords, soundEnabled, detectionMode, activeDetectorId]);
+  }, [gpsCoords, soundEnabled, detectionMode, activeDetectorId]);
 
   useEffect(() => {
-    if (isMonitoring && cameraStatus === 'active' && !isAnalyzingFrame) {
-      captureTimerRef.current = setTimeout(captureAndAnalyzeFrame, 900);
+    if (isMonitoring) {
+      startCamera();
+      locationService.startTracking();
+      // Kick off inference loop once camera initializes
+      captureTimerRef.current = setTimeout(captureAndAnalyzeFrame, 600);
+    } else {
+      if (captureTimerRef.current) {
+        clearTimeout(captureTimerRef.current);
+        captureTimerRef.current = null;
+      }
+      smoothedDetectionsRef.current = [];
+      setCurrentDetections([]);
+      stopCamera();
     }
     return () => {
       if (captureTimerRef.current) {
         clearTimeout(captureTimerRef.current);
+        captureTimerRef.current = null;
       }
+      stopCamera();
     };
-  }, [isMonitoring, cameraStatus, isAnalyzingFrame, captureAndAnalyzeFrame]);
+  }, [isMonitoring, startCamera, stopCamera, captureAndAnalyzeFrame]);
 
   const toggleSound = () => setSoundEnabled((prev) => !prev);
   const toggleVoice = () => {
@@ -546,13 +785,23 @@ export const MonitorPage: React.FC<MonitorPageProps> = ({
 
       {/* AI Model Engine Selector Bar */}
       <div className="bg-slate-900/95 px-3 py-2 border-b border-slate-800 flex flex-wrap items-center justify-between gap-2 z-20">
-        <div className="flex items-center gap-1.5 text-xs text-slate-300">
+        <div className="flex items-center flex-wrap gap-2 text-xs text-slate-300">
           <Cpu className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
           <span className="font-bold text-[10px] sm:text-[11px] text-slate-400">AI MODEL:</span>
           {activeDetectorId === 'yolov8-nano' && (
-            <span className="hidden md:inline-flex items-center gap-1 text-[10px] text-cyan-300 bg-cyan-950/80 px-2 py-0.5 rounded-full border border-cyan-800/60 font-mono">
-              <span>RDD: D00, D10, D20, D40</span>
-            </span>
+            <div className="inline-flex items-center flex-wrap gap-1.5 text-[10px] font-mono text-cyan-300 bg-cyan-950/80 px-2.5 py-0.5 rounded-full border border-cyan-800/60">
+              <span className="font-bold text-cyan-200">RDD: D00, D10, D20, D40</span>
+              {yoloStatus.loadTimeMs > 0 && (
+                <span className="text-slate-400">• Load: {yoloStatus.loadTimeMs}ms</span>
+              )}
+              {yoloStatus.lastInferenceLatencyMs > 0 && (
+                <span className="text-emerald-400 font-bold">• Latency: {yoloStatus.lastInferenceLatencyMs}ms</span>
+              )}
+              {yoloStatus.frameCount > 0 && (
+                <span className="text-blue-300">• Frames: {yoloStatus.frameCount}</span>
+              )}
+              <span className="text-amber-300">• Conf: {Math.round(yoloStatus.confidenceThreshold * 100)}%</span>
+            </div>
           )}
         </div>
 
@@ -579,6 +828,12 @@ export const MonitorPage: React.FC<MonitorPageProps> = ({
             <span>YOLOv8 Nano (Edge ONNX)</span>
             {yoloStatus.status === 'loading' && (
               <span className="text-[9px] text-blue-200 animate-pulse">Loading...</span>
+            )}
+            {yoloStatus.status === 'ready' && (
+              <span className="text-[9px] text-emerald-300 font-mono font-bold">Ready</span>
+            )}
+            {yoloStatus.status === 'error' && (
+              <span className="text-[9px] text-rose-300 font-mono font-bold">Error</span>
             )}
           </button>
 
@@ -663,7 +918,7 @@ export const MonitorPage: React.FC<MonitorPageProps> = ({
       )}
 
       {/* Main Camera Viewport */}
-      <div className="relative flex-1 w-full bg-black overflow-hidden flex items-center justify-center">
+      <div ref={containerRef} className="relative flex-1 w-full bg-black overflow-hidden flex items-center justify-center">
         {/* Flashlight Screen Illuminator Overlay */}
         {flashlightOn && (
           <div
@@ -678,6 +933,7 @@ export const MonitorPage: React.FC<MonitorPageProps> = ({
           playsInline
           autoPlay
           muted
+          onLoadedMetadata={handleLoadedMetadata}
           className={`w-full h-full object-cover transition-opacity duration-300 ${
             cameraStatus === 'active' ? 'opacity-100' : 'opacity-0'
           }`}
@@ -687,44 +943,51 @@ export const MonitorPage: React.FC<MonitorPageProps> = ({
         {cameraStatus === 'active' &&
           currentDetections.map((det, idx) => {
             if (!det.box2d || det.box2d.length !== 4) return null;
-            const [ymin, xmin, ymax, xmax] = det.box2d;
-            const top = Math.max(0, ymin / 10);
-            const left = Math.max(0, xmin / 10);
-            const width = Math.max(2, (xmax - xmin) / 10);
-            const height = Math.max(2, (ymax - ymin) / 10);
+            const boxStyle = computeCoverBoundingBox(
+              det.box2d,
+              videoDimensions.width,
+              videoDimensions.height,
+              containerDimensions.width,
+              containerDimensions.height
+            );
 
             const isSpeed = det.type === 'vehicle_speed';
             const isHigh = det.severity === 'high';
+            const isMed = det.severity === 'medium';
+
             const strokeColor = isSpeed
-              ? 'border-cyan-400 bg-cyan-500/10'
+              ? 'border-cyan-400 bg-cyan-500/10 shadow-lg shadow-cyan-400/20'
               : isHigh
-              ? 'border-rose-500 bg-rose-500/10 shadow-lg shadow-rose-500/20'
-              : 'border-amber-400 bg-amber-400/10 shadow-lg shadow-amber-400/20';
+              ? 'border-rose-500 bg-rose-500/15 shadow-lg shadow-rose-500/30'
+              : isMed
+              ? 'border-amber-400 bg-amber-400/15 shadow-lg shadow-amber-400/30'
+              : 'border-blue-400 bg-blue-400/15 shadow-lg shadow-blue-400/30';
+
             const badgeColor = isSpeed
               ? 'bg-cyan-500 text-slate-950'
               : isHigh
               ? 'bg-rose-600 text-white'
-              : 'bg-amber-500 text-slate-950';
+              : isMed
+              ? 'bg-amber-500 text-slate-950'
+              : 'bg-blue-600 text-white';
 
             const label =
               det.description.split(']')[0]?.replace('[', '') || det.type.replace('_', ' ');
 
             return (
               <div
-                key={`bbox-${idx}`}
-                className={`absolute pointer-events-none border-2 rounded-lg transition-all duration-150 z-20 ${strokeColor}`}
-                style={{
-                  top: `${top}%`,
-                  left: `${left}%`,
-                  width: `${width}%`,
-                  height: `${height}%`,
-                }}
+                key={`bbox-${idx}-${det.type}`}
+                className={`absolute pointer-events-none border-2 rounded-xl transition-all duration-100 z-20 ${strokeColor}`}
+                style={boxStyle}
               >
                 <div
-                  className={`absolute -top-5 left-0 px-1.5 py-0.5 rounded text-[10px] font-bold font-mono tracking-tight shadow-md flex items-center gap-1 whitespace-nowrap ${badgeColor}`}
+                  className={`absolute -top-5 left-0 px-2 py-0.5 rounded text-[10px] font-bold font-mono tracking-tight shadow-md flex items-center gap-1.5 whitespace-nowrap ${badgeColor}`}
                 >
                   <span>{label}</span>
-                  <span>{Math.round(det.confidence * 100)}%</span>
+                  <span className="opacity-90">{Math.round(det.confidence * 100)}%</span>
+                  <span className="uppercase text-[9px] px-1 rounded bg-black/30">
+                    {det.severity}
+                  </span>
                 </div>
               </div>
             );
