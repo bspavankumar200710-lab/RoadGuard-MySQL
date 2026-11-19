@@ -7,9 +7,7 @@ import { DashboardPage } from './pages/DashboardPage';
 import { MonitorPage } from './pages/MonitorPage';
 import { MapPage } from './pages/MapPage';
 import { HistoryPage } from './pages/HistoryPage';
-import { SchedulePage } from './pages/SchedulePage';
 import { EvaluationPage } from './pages/EvaluationPage';
-import { DownloadPage } from './pages/DownloadPage';
 import { DemoModeModal } from './components/DemoModeModal';
 import { UserAuthButton } from './components/UserAuthButton';
 import { AuthGateModal } from './components/AuthGateModal';
@@ -118,15 +116,11 @@ export default function App() {
       case 'monitor':
         return 'AI Camera Scanner';
       case 'map':
-        return 'Hazard GIS & Heatmap';
+        return 'Hazard Map';
       case 'history':
         return 'Defect Records & Review';
-      case 'schedule':
-        return 'Municipal Work Orders & Patrols';
       case 'evaluation':
         return 'Research Evaluation & Baselines';
-      case 'download':
-        return 'Mobile App & PWA';
       default:
         return 'RoadGuard AI';
     }
@@ -304,7 +298,7 @@ export default function App() {
                     isMonitoring={isMonitoring}
                     onStartMonitoring={handleStartMonitoring}
                     onNavigateToHistory={handleNavigateToHistory}
-                    onNavigateToSchedule={() => setCurrentTab('schedule')}
+                    onNavigateToMap={() => handleNavigateToMap()}
                     onOpenDemo={() => setIsDemoModalOpen(true)}
                     lastDriveSummary={driveSummary}
                     onOpenDriveSummary={() => setIsDriveSummaryOpen(true)}
@@ -324,6 +318,7 @@ export default function App() {
                   <MonitorPage
                     isMonitoring={isMonitoring}
                     onToggleMonitoring={handleToggleMonitoring}
+                    onNavigateToMap={handleNavigateToMap}
                     onOpenDemo={() => setIsDemoModalOpen(true)}
                     onViewSummary={() => setIsDriveSummaryOpen(true)}
                     lastSummary={driveSummary}
@@ -365,22 +360,6 @@ export default function App() {
                 </motion.div>
               )}
 
-              {currentTab === 'schedule' && (
-                <motion.div
-                  key="schedule"
-                  variants={pageVariants}
-                  initial="initial"
-                  animate="animate"
-                  exit="exit"
-                  className="w-full flex-1 flex flex-col bg-slate-50"
-                >
-                  <SchedulePage
-                    detections={detections}
-                    onNavigateToMap={handleNavigateToMap}
-                  />
-                </motion.div>
-              )}
-
               {currentTab === 'evaluation' && (
                 <motion.div
                   key="evaluation"
@@ -391,25 +370,6 @@ export default function App() {
                   className="w-full flex-1 flex flex-col bg-slate-50"
                 >
                   <EvaluationPage />
-                </motion.div>
-              )}
-
-              {currentTab === 'download' && (
-                <motion.div
-                  key="download"
-                  variants={pageVariants}
-                  initial="initial"
-                  animate="animate"
-                  exit="exit"
-                  className="w-full flex-1 flex flex-col bg-slate-50"
-                >
-                  <DownloadPage
-                    onOpenDemo={() => setIsDemoModalOpen(true)}
-                    onNavigateToMonitor={() => {
-                      setIsMonitoring(true);
-                      setCurrentTab('monitor');
-                    }}
-                  />
                 </motion.div>
               )}
             </AnimatePresence>

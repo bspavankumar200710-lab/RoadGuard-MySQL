@@ -2,7 +2,7 @@ import React from 'react';
 import { ShieldCheck, Camera, Sparkles, Heart } from 'lucide-react';
 
 interface WebsiteFooterProps {
-  onNavigate: (tab: 'dashboard' | 'monitor' | 'map' | 'history' | 'download') => void;
+  onNavigate: (tab: 'dashboard' | 'monitor' | 'map' | 'history' | 'evaluation') => void;
   onOpenDemo: () => void;
 }
 
@@ -25,7 +25,7 @@ export const WebsiteFooter: React.FC<WebsiteFooterProps> = ({ onNavigate, onOpen
               </span>
             </div>
             <p className="text-slate-400 text-xs max-w-sm leading-relaxed">
-              Real-time autonomous edge AI platform detecting road hazards, asphalt potholes, and moving vehicle velocities using on-device computer vision and Cloud MySQL sync.
+              Real-time autonomous AI platform detecting road hazards, asphalt potholes, and surface fractures using feedback-guided vision and Cloud MySQL sync.
             </p>
             <div className="flex items-center gap-3 pt-1 text-slate-500 text-[11px]">
               <span className="flex items-center gap-1 text-emerald-400">
@@ -79,10 +79,10 @@ export const WebsiteFooter: React.FC<WebsiteFooterProps> = ({ onNavigate, onOpen
               </li>
               <li>
                 <button
-                  onClick={() => onNavigate('download')}
+                  onClick={() => onNavigate('evaluation')}
                   className="hover:text-white transition-colors flex items-center gap-1.5 font-semibold text-emerald-400"
                 >
-                  📱 Download App (Phone QR Code)
+                  🔬 Research Evaluation Benchmark
                 </button>
               </li>
             </ul>

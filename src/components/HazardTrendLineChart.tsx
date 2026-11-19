@@ -14,7 +14,7 @@ interface DayData {
   dateDisplay: string;
   total: number;
   potholes: number;
-  speeds: number;
+  cracks: number;
   other: number;
 }
 
@@ -23,7 +23,7 @@ export const HazardTrendLineChart: React.FC<HazardTrendLineChartProps> = ({
   className = '',
 }) => {
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
-  const [activeMetric, setActiveMetric] = useState<'total' | 'potholes' | 'speeds'>('total');
+  const [activeMetric, setActiveMetric] = useState<'total' | 'potholes' | 'cracks'>('total');
 
   // Compute daily trend for the last 7 days (today and preceding 6 days)
   const daysData = useMemo<DayData[]>(() => {
@@ -49,7 +49,7 @@ export const HazardTrendLineChart: React.FC<HazardTrendLineChartProps> = ({
         dateDisplay,
         total: 0,
         potholes: 0,
-        speeds: 0,
+        cracks: 0,
         other: 0,
       });
     }
@@ -70,8 +70,8 @@ export const HazardTrendLineChart: React.FC<HazardTrendLineChartProps> = ({
         matchedDay.total += 1;
         if (record.type === 'pothole') {
           matchedDay.potholes += 1;
-        } else if (record.type === 'vehicle_speed') {
-          matchedDay.speeds += 1;
+        } else if (record.type === 'road_crack') {
+          matchedDay.cracks += 1;
         } else {
           matchedDay.other += 1;
         }
@@ -84,7 +84,7 @@ export const HazardTrendLineChart: React.FC<HazardTrendLineChartProps> = ({
   // Metric value helper
   const getVal = (d: DayData) => {
     if (activeMetric === 'potholes') return d.potholes;
-    if (activeMetric === 'speeds') return d.speeds;
+    if (activeMetric === 'cracks') return d.cracks;
     return d.total;
   };
 
@@ -141,8 +141,8 @@ export const HazardTrendLineChart: React.FC<HazardTrendLineChartProps> = ({
   const activeColor =
     activeMetric === 'potholes'
       ? { stroke: '#f43f5e', fill: '#f43f5e', text: 'text-rose-600', bg: 'bg-rose-50', gradient: 'roseGrad' }
-      : activeMetric === 'speeds'
-      ? { stroke: '#0284c7', fill: '#0284c7', text: 'text-sky-600', bg: 'bg-sky-50', gradient: 'skyGrad' }
+      : activeMetric === 'cracks'
+      ? { stroke: '#f59e0b', fill: '#f59e0b', text: 'text-amber-600', bg: 'bg-amber-50', gradient: 'amberGrad' }
       : { stroke: '#6366f1', fill: '#6366f1', text: 'text-indigo-600', bg: 'bg-indigo-50', gradient: 'indigoGrad' };
 
   return (
@@ -162,7 +162,7 @@ export const HazardTrendLineChart: React.FC<HazardTrendLineChartProps> = ({
             </span>
           </div>
           <p className="text-[11px] text-slate-500 mt-0.5">
-            Total of <span className="font-bold text-slate-800">{totalInPeriod}</span> {activeMetric === 'potholes' ? 'potholes' : activeMetric === 'speeds' ? 'speed radar detections' : 'hazards'} registered
+            Total of <span className="font-bold text-slate-800">{totalInPeriod}</span> {activeMetric === 'potholes' ? 'potholes' : activeMetric === 'cracks' ? 'road cracks' : 'hazards'} registered
           </p>
         </div>
 
@@ -196,16 +196,16 @@ export const HazardTrendLineChart: React.FC<HazardTrendLineChartProps> = ({
           </button>
           <button
             onClick={() => {
-              setActiveMetric('speeds');
+              setActiveMetric('cracks');
               setHoveredIndex(null);
             }}
             className={`px-2 sm:px-2.5 py-1 text-[10px] sm:text-[11px] font-bold rounded-lg transition-all text-center ${
-              activeMetric === 'speeds'
-                ? 'bg-sky-600 text-white shadow-sm'
+              activeMetric === 'cracks'
+                ? 'bg-amber-600 text-white shadow-sm'
                 : 'text-slate-600 hover:text-slate-900'
             }`}
           >
-            🏎️ Speeds
+            ⚡ Cracks
           </button>
         </div>
       </div>
@@ -246,7 +246,7 @@ export const HazardTrendLineChart: React.FC<HazardTrendLineChartProps> = ({
               {daysData[hoveredIndex].dateDisplay} ({daysData[hoveredIndex].dayLabel})
             </span>
             <span className="font-mono font-bold text-slate-900 text-xs">
-              {getVal(daysData[hoveredIndex])} {activeMetric === 'potholes' ? 'potholes' : activeMetric === 'speeds' ? 'speeds' : 'hazards'}
+              {getVal(daysData[hoveredIndex])} {activeMetric === 'potholes' ? 'potholes' : activeMetric === 'cracks' ? 'cracks' : 'hazards'}
             </span>
           </div>
         )}

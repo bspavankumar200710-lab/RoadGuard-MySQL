@@ -122,15 +122,7 @@ export const DemoModeModal: React.FC<DemoModeModalProps> = ({
         let lastId = '';
         for (const obj of result.objects) {
           const locHint = `${coords.latitude.toFixed(4)}°, ${coords.longitude.toFixed(4)}°`;
-          if (obj.type === 'vehicle_speed') {
-            audioAlertService.announceDetection(
-              'vehicle_speed',
-              obj.severity,
-              `${obj.vehicleType || 'vehicle'} at ${obj.estimatedSpeedKmh || 50} km/h`
-            );
-          } else {
-            audioAlertService.announceDetection(obj.type, obj.severity, locHint);
-          }
+          audioAlertService.announceDetection(obj.type, obj.severity, locHint);
 
           const damageClass = imageStorageService.extractDamageClass(obj);
           const damageName = imageStorageService.resolveDamageName(damageClass, obj.type);
@@ -201,11 +193,11 @@ export const DemoModeModal: React.FC<DemoModeModalProps> = ({
               <div className="flex items-center gap-2">
                 <h3 className="font-extrabold text-base tracking-tight">AI ROAD TEST LAB</h3>
                 <span className="text-[10px] font-bold bg-white text-blue-700 px-2 py-0.5 rounded-full uppercase">
-                  Potholes & Speed
+                  Road Hazards & Defects
                 </span>
               </div>
               <p className="text-[11px] text-blue-100">
-                Test precision detection for potholes and moving car/scooter speeds
+                Test precision detection for potholes, cracks, and road defects
               </p>
             </div>
           </div>
@@ -269,14 +261,14 @@ export const DemoModeModal: React.FC<DemoModeModalProps> = ({
             <label className="text-xs font-bold text-slate-700 block mb-1.5">
               Select Detection Target:
             </label>
-            <div className="grid grid-cols-3 gap-1.5 bg-slate-100 p-1 rounded-xl">
+            <div className="grid grid-cols-2 gap-1.5 bg-slate-100 p-1 rounded-xl">
               <button
                 onClick={() => setTargetMode('both')}
                 className={`py-1.5 text-xs font-bold rounded-lg transition-all ${
                   targetMode === 'both' ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-600'
                 }`}
               >
-                All (Potholes & Speed)
+                All Road Hazards
               </button>
               <button
                 onClick={() => setTargetMode('potholes')}
@@ -285,14 +277,6 @@ export const DemoModeModal: React.FC<DemoModeModalProps> = ({
                 }`}
               >
                 🕳️ Potholes Only
-              </button>
-              <button
-                onClick={() => setTargetMode('speed')}
-                className={`py-1.5 text-xs font-bold rounded-lg transition-all ${
-                  targetMode === 'speed' ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-600'
-                }`}
-              >
-                🏎️ Vehicle Speed Only
               </button>
             </div>
           </div>

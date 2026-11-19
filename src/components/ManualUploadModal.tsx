@@ -151,16 +151,32 @@ export const ManualUploadModal: React.FC<ManualUploadModalProps> = ({
 
       let coords = locationService.getCurrentCoordinates();
 
-      if (!coords) {
-        coords = {
-          latitude: 12.9716 + (Math.random() - 0.5) * 0.04,
-          longitude: 77.5946 + (Math.random() - 0.5) * 0.04,
-        };
+      if (!coords && typeof navigator !== 'undefined' && navigator.geolocation) {
+        try {
+          const freshPos = await new Promise<GeolocationPosition>((resolve, reject) => {
+            navigator.geolocation.getCurrentPosition(resolve, reject, {
+              enableHighAccuracy: true,
+              timeout: 6000,
+            });
+          });
+          coords = {
+            latitude: freshPos.coords.latitude,
+            longitude: freshPos.coords.longitude,
+            accuracy: freshPos.coords.accuracy,
+          };
+        } catch {
+          // Geolocation unavailable or denied
+        }
       }
+
+      const lat = coords?.latitude ?? null;
+      const lng = coords?.longitude ?? null;
 
       const locHint = locationName.trim()
         ? locationName.trim()
-        : `${coords.latitude.toFixed(4)}°, ${coords.longitude.toFixed(4)}°`;
+        : lat != null && lng != null
+        ? `${lat.toFixed(4)}°, ${lng.toFixed(4)}°`
+        : 'Location unrecorded';
 
       const primaryObj = analysisResult.objects[0] || {
         type: 'other_hazard' as const,
@@ -186,8 +202,8 @@ export const ManualUploadModal: React.FC<ManualUploadModalProps> = ({
         confidence: primaryObj.confidence,
         severity: primaryObj.severity,
         description: primaryObj.description,
-        latitude: coords.latitude,
-        longitude: coords.longitude,
+        latitude: lat,
+        longitude: lng,
         locationName: locHint,
         imageUrl: previewDataUrl,
         annotatedImageUrl: annotatedPreviewUrl || undefined,

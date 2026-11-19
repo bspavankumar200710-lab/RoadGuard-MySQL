@@ -51,7 +51,7 @@ interface DashboardPageProps {
   isMonitoring: boolean;
   onStartMonitoring: () => void;
   onNavigateToHistory: () => void;
-  onNavigateToSchedule?: () => void;
+  onNavigateToMap?: () => void;
   onOpenDemo: () => void;
   lastDriveSummary?: DriveSummary | null;
   onOpenDriveSummary?: () => void;
@@ -63,7 +63,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
   isMonitoring,
   onStartMonitoring,
   onNavigateToHistory,
-  onNavigateToSchedule,
+  onNavigateToMap,
   onOpenDemo,
   lastDriveSummary,
   onOpenDriveSummary,
@@ -83,7 +83,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
   }, []);
 
   const potholePercent = stats.total > 0 ? Math.round((stats.potholes / stats.total) * 100) : 0;
-  const speedPercent = stats.total > 0 ? Math.round((stats.speedDetections / stats.total) * 100) : 0;
+  const highSeverityPercent = stats.total > 0 ? Math.round((stats.highSeverity / stats.total) * 100) : 0;
   const crackPercent = stats.total > 0 ? Math.round((stats.roadCracks / stats.total) * 100) : 0;
   const signPercent = stats.total > 0 ? Math.round((stats.brokenSigns / stats.total) * 100) : 0;
 
@@ -102,8 +102,6 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
     switch (type) {
       case 'pothole':
         return { emoji: '🕳️', label: 'Pothole' };
-      case 'vehicle_speed':
-        return { emoji: '🏎️', label: 'Vehicle Speed' };
       case 'road_crack':
         return { emoji: '⚡', label: 'Road Crack' };
       case 'broken_sign':
@@ -128,15 +126,15 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
           <div className="space-y-1.5 max-w-xl">
             <div className="flex items-center gap-2">
               <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-blue-500/30 border border-blue-400/40 text-blue-200">
-                AI Vision & Radar System
+                Road Damage AI Platform
               </span>
-              <span className="text-xs text-blue-200">• Road Safety Platform</span>
+              <span className="text-xs text-blue-200">• MySQL Cloud Synced</span>
             </div>
             <h2 className="text-xl sm:text-3xl font-extrabold tracking-tight">
-              Real-Time Road Hazard & Speed Radar Monitor
+              Real-Time Road Hazard & Defect Monitor
             </h2>
             <p className="text-xs sm:text-sm text-blue-100/90 leading-relaxed">
-              Detect potholes, asphalt fissures, degraded road signs, and vehicle velocity using smartphone camera & on-device AI.
+              Detect potholes, asphalt fissures, and road defects using real-time camera vision & geotagged hazard mapping.
             </p>
           </div>
 
@@ -159,6 +157,17 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
               <span>Upload Road Photo</span>
             </motion.button>
 
+            {onNavigateToMap && (
+              <motion.button
+                {...buttonPressProps}
+                onClick={onNavigateToMap}
+                className="py-3 px-4 rounded-2xl bg-indigo-600/90 hover:bg-indigo-600 text-white font-semibold text-xs sm:text-sm border border-indigo-400/40 transition-colors flex items-center gap-1.5 shadow-md shadow-indigo-600/20"
+              >
+                <MapPin className="w-4 h-4 text-indigo-200" />
+                <span>Hazard Map</span>
+              </motion.button>
+            )}
+
             <motion.button
               {...buttonPressProps}
               onClick={onOpenDemo}
@@ -167,17 +176,6 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
               <Zap className="w-4 h-4 text-amber-300 inline mr-1.5" />
               Test Lab
             </motion.button>
-
-            {onNavigateToSchedule && (
-              <motion.button
-                {...buttonPressProps}
-                onClick={onNavigateToSchedule}
-                className="py-3 px-4 rounded-2xl bg-indigo-800/80 hover:bg-indigo-800 text-white font-semibold text-xs sm:text-sm border border-indigo-500/40 transition-colors flex items-center gap-1.5"
-              >
-                <Calendar className="w-4 h-4 text-indigo-300" />
-                <span>Work Orders & Patrols</span>
-              </motion.button>
-            )}
           </div>
         </div>
       </div>
@@ -330,22 +328,22 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
           </div>
         </motion.div>
 
-        {/* Vehicle Speeds */}
+        {/* High Severity Hazards */}
         <motion.div
           {...cardHoverProps}
           className="bg-white rounded-2xl p-4 sm:p-5 shadow-sm border border-slate-200/90 transition-shadow"
         >
           <div className="flex items-center justify-between text-slate-400 mb-2">
-            <span className="text-xs font-semibold uppercase tracking-wider text-sky-600">Speed Radar</span>
-            <div className="p-2 rounded-xl bg-sky-50 text-sky-600 text-lg leading-none">
-              🏎️
+            <span className="text-xs font-semibold uppercase tracking-wider text-rose-600">Critical Severity</span>
+            <div className="p-2 rounded-xl bg-rose-50 text-rose-600 text-lg leading-none">
+              🚨
             </div>
           </div>
           <div className="text-2xl sm:text-3xl font-black text-slate-900">
-            <AnimatedCounter value={stats.speedDetections} />
+            <AnimatedCounter value={stats.highSeverity} />
           </div>
           <div className="text-[11px] text-slate-500 mt-1">
-            {speedPercent}% cars/scooters
+            {highSeverityPercent}% immediate hazard
           </div>
         </motion.div>
 
@@ -411,20 +409,20 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                 </div>
               </div>
 
-              {/* Vehicle Speeds Bar */}
+              {/* High Severity Bar */}
               <div>
                 <div className="flex justify-between text-xs mb-1.5">
                   <span className="font-semibold text-slate-700 flex items-center gap-1">
-                    🏎️ Vehicle Speeds
+                    🚨 High Severity Hazards
                   </span>
-                  <span className="font-mono text-slate-500">{stats.speedDetections} ({speedPercent}%)</span>
+                  <span className="font-mono text-slate-500">{stats.highSeverity} ({highSeverityPercent}%)</span>
                 </div>
                 <div className="w-full bg-slate-100 h-2.5 rounded-full overflow-hidden">
                   <motion.div
                     initial={{ width: 0 }}
-                    animate={{ width: `${Math.max(stats.speedDetections > 0 ? 5 : 0, speedPercent)}%` }}
+                    animate={{ width: `${Math.max(stats.highSeverity > 0 ? 5 : 0, highSeverityPercent)}%` }}
                     transition={progressBarTransition}
-                    className="bg-sky-500 h-full rounded-full"
+                    className="bg-rose-600 h-full rounded-full"
                   />
                 </div>
               </div>
@@ -484,7 +482,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
         <div className="flex items-center justify-between mb-3.5">
           <div>
             <h3 className="text-base sm:text-lg font-bold text-slate-900 tracking-tight">
-              Recent Road Hazards & Speed Radar Detections
+              Recent Road Hazard Detections
             </h3>
             <p className="text-xs text-slate-500">
               Live captures saved with high-res camera snapshots and GPS coordinates

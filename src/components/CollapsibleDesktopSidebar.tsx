@@ -44,10 +44,9 @@ export const CollapsibleDesktopSidebar: React.FC<CollapsibleDesktopSidebarProps>
   const navItems = [
     { id: 'dashboard' as const, label: 'Dashboard', icon: LayoutDashboard },
     { id: 'monitor' as const, label: 'Camera Monitor', icon: Camera, live: isMonitoring },
-    { id: 'map' as const, label: 'Hazard & Heatmap', icon: MapPin },
+    { id: 'map' as const, label: 'Hazard Map', icon: MapPin },
     { id: 'history' as const, label: 'Detection History', icon: History, count: unreadCount },
     { id: 'evaluation' as const, label: 'Research & Eval', icon: FlaskConical },
-    { id: 'download' as const, label: 'Download App', icon: Smartphone },
   ];
 
   return (

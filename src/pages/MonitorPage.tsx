@@ -48,6 +48,7 @@ import {
   X,
   FileText,
   Cpu,
+  MapPin,
 } from 'lucide-react';
 import { driveSessionService, DriveSummary } from '../services/driveSessionService';
 
@@ -136,6 +137,7 @@ function computeCoverBoundingBox(
 interface MonitorPageProps {
   isMonitoring: boolean;
   onToggleMonitoring: (start: boolean) => void;
+  onNavigateToMap?: (hazardId?: string) => void;
   onOpenDemo: () => void;
   onViewSummary?: () => void;
   lastSummary?: DriveSummary | null;
@@ -144,6 +146,7 @@ interface MonitorPageProps {
 export const MonitorPage: React.FC<MonitorPageProps> = ({
   isMonitoring,
   onToggleMonitoring,
+  onNavigateToMap,
   onOpenDemo,
   onViewSummary,
   lastSummary,
@@ -198,6 +201,19 @@ export const MonitorPage: React.FC<MonitorPageProps> = ({
   const [lastFrameTime, setLastFrameTime] = useState<number | null>(null);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [realtimeNotification, setRealtimeNotification] = useState<string | null>(null);
+
+  // Manual Snap & Geotag to Hazard Map (Requirement 3: Steps 1-6)
+  const [isManualCapturing, setIsManualCapturing] = useState<boolean>(false);
+  const [manualCaptureResult, setManualCaptureResult] = useState<{
+    success: boolean;
+    recordId?: string;
+    message: string;
+    hazardName?: string;
+    damageClass?: string;
+    confidence?: number;
+    severity?: string;
+    coords?: { lat: number; lng: number };
+  } | null>(null);
 
   // AI Detector Engine State: 'gemini-feedback' | 'gemini-standard' | 'yolov5'
   const [activeDetectorId, setActiveDetectorId] = useState<SupportedDetectorModel>(() =>
@@ -609,11 +625,7 @@ export const MonitorPage: React.FC<MonitorPageProps> = ({
             setLatestSavedRecord(record);
             driveSessionService.addHazardToSession(record);
 
-            if (obj.type === 'vehicle_speed') {
-              showNotification(`🏎️ ${damageName} (${damageClass}) • Saved to Database`);
-            } else {
-              showNotification(`🚨 ${damageClass}: ${damageName} at ${locationHint} • Saved`);
-            }
+            showNotification(`🚨 ${damageClass}: ${damageName} at ${locationHint} • Saved`);
           }
         }
       } else {
@@ -638,11 +650,149 @@ export const MonitorPage: React.FC<MonitorPageProps> = ({
     }
   }, [gpsCoords, soundEnabled, detectionMode, activeDetectorId]);
 
+  // Manual Snap & Geotag to Hazard Map (Requirement 3: Steps 1-6)
+  const handleManualCaptureAndMap = useCallback(async () => {
+    if (!videoRef.current || videoRef.current.readyState < 2) {
+      if (cameraStatus !== 'active') {
+        await startCamera();
+      }
+      showNotification('Camera stream is initializing. Please tap capture again in a moment.');
+      return;
+    }
+
+    try {
+      setIsManualCapturing(true);
+      setManualCaptureResult(null);
+
+      const video = videoRef.current;
+      const snapCanvas = canvasRef.current || document.createElement('canvas');
+      snapCanvas.width = video.videoWidth || 1280;
+      snapCanvas.height = video.videoHeight || 720;
+      const snapCtx = snapCanvas.getContext('2d');
+      if (!snapCtx) throw new Error('Could not initialize canvas rendering context');
+      snapCtx.drawImage(video, 0, 0, snapCanvas.width, snapCanvas.height);
+      const snapshotBase64 = snapCanvas.toDataURL('image/jpeg', 0.88);
+
+      // STEP 3: Automatic GPS Telemetry collection at the exact moment of capture
+      let captureCoords: LocationCoordinates | null = gpsCoords;
+      if (typeof navigator !== 'undefined' && navigator.geolocation) {
+        try {
+          const freshPos = await new Promise<GeolocationPosition>((resolve, reject) => {
+            navigator.geolocation.getCurrentPosition(resolve, reject, {
+              enableHighAccuracy: true,
+              timeout: 8000,
+              maximumAge: 0,
+            });
+          });
+          captureCoords = {
+            latitude: freshPos.coords.latitude,
+            longitude: freshPos.coords.longitude,
+            accuracy: freshPos.coords.accuracy,
+            heading: freshPos.coords.heading,
+            speed: freshPos.coords.speed,
+          };
+          setGpsCoords(captureCoords);
+          setGpsStatus('connected');
+        } catch (geoErr: any) {
+          console.warn('[MonitorPage] Direct GPS capture fallback to cached location:', geoErr);
+        }
+      }
+
+      // Check GPS availability (Requirement 4: If GPS is unavailable, do not create a falsely geotagged hazard)
+      if (!captureCoords || captureCoords.latitude == null || captureCoords.longitude == null) {
+        setManualCaptureResult({
+          success: false,
+          message: 'GPS Telemetry Required: Cannot geotag hazard without actual device location. Please enable GPS permissions.',
+        });
+        showNotification('⚠️ GPS Required: Enable location permissions to geotag road damage.');
+        return;
+      }
+
+      // STEP 4: AI Detection (YOLOv5 or Gemini according to active model)
+      const detector = detectorRegistry.getActiveDetector();
+      const result = await detector.detectRoadProblems(snapshotBase64, 'image/jpeg', 'potholes');
+
+      if (!result.detected || !result.objects || result.objects.length === 0) {
+        setManualCaptureResult({
+          success: false,
+          message: 'No road damage detected in frame (confidence below threshold). No hazard was created.',
+        });
+        showNotification('ℹ️ No road damage detected in current view.');
+        return;
+      }
+
+      // Filter for genuine road damage categories
+      const roadDamageObjs = result.objects.filter(
+        (o) => o.type === 'pothole' || o.type === 'road_crack' || o.type === 'broken_sign' || o.type === 'other_hazard'
+      );
+
+      if (roadDamageObjs.length === 0) {
+        setManualCaptureResult({
+          success: false,
+          message: 'No supported road damage category detected in this frame.',
+        });
+        return;
+      }
+
+      const topHazard = roadDamageObjs[0];
+      const damageClass = imageStorageService.extractDamageClass(topHazard);
+      const damageName = imageStorageService.resolveDamageName(damageClass, topHazard.type);
+      const locHint = `${captureCoords.latitude.toFixed(4)}°, ${captureCoords.longitude.toFixed(4)}°`;
+
+      // STEP 5: Automatic Hazard Creation in Database
+      const newRecord = await detectionService.addDetection({
+        type: topHazard.type,
+        damageClass,
+        damageName,
+        confidence: topHazard.confidence,
+        severity: topHazard.severity,
+        description: topHazard.description,
+        latitude: captureCoords.latitude,
+        longitude: captureCoords.longitude,
+        locationName: locHint,
+        imageUrl: snapshotBase64,
+        imageSource: 'live_camera',
+        aiEngine: activeDetectorId,
+        verificationStatus: 'pending',
+        box2d: topHazard.box2d,
+      });
+
+      // STEP 6: Automatic Hazard Map Update & Direct Link
+      setLatestSavedRecord(newRecord);
+      setManualCaptureResult({
+        success: true,
+        recordId: newRecord.id,
+        message: `${damageName} (${damageClass}) detected with ${Math.round(topHazard.confidence * 100)}% confidence and geotagged to Hazard Map!`,
+        hazardName: damageName,
+        damageClass,
+        confidence: topHazard.confidence,
+        severity: topHazard.severity,
+        coords: { lat: captureCoords.latitude, lng: captureCoords.longitude },
+      });
+
+      showNotification(`🚨 ${damageName} Geotagged & Saved to Database!`);
+
+      if (soundEnabled) {
+        audioAlertService.announceDetection(topHazard.type, topHazard.severity, locHint);
+      }
+    } catch (err: any) {
+      console.error('[MonitorPage] Manual snap & geotag failed:', err);
+      setManualCaptureResult({
+        success: false,
+        message: err?.message || 'AI detection or database save failed. Please check network and retry.',
+      });
+      showNotification('❌ Detection failed. Please retry.');
+    } finally {
+      setIsManualCapturing(false);
+    }
+  }, [cameraStatus, gpsCoords, startCamera, activeDetectorId, soundEnabled]);
+
   useEffect(() => {
+    // Keep camera stream active so user immediately sees road and can capture
+    startCamera();
+    locationService.startTracking();
+
     if (isMonitoring) {
-      startCamera();
-      locationService.startTracking();
-      // Kick off inference loop once camera initializes
       captureTimerRef.current = setTimeout(captureAndAnalyzeFrame, 600);
     } else {
       if (captureTimerRef.current) {
@@ -651,7 +801,6 @@ export const MonitorPage: React.FC<MonitorPageProps> = ({
       }
       smoothedDetectionsRef.current = [];
       setCurrentDetections([]);
-      stopCamera();
     }
     return () => {
       if (captureTimerRef.current) {
@@ -712,7 +861,7 @@ export const MonitorPage: React.FC<MonitorPageProps> = ({
                 </span>
               )}
             </div>
-            <p className="text-[10px] text-slate-400">High-Precision AI Vision & Vehicle Speed Radar</p>
+            <p className="text-[10px] text-slate-400">High-Precision Road Damage AI & Geotagging</p>
           </div>
         </div>
 
@@ -843,7 +992,7 @@ export const MonitorPage: React.FC<MonitorPageProps> = ({
         </div>
       </div>
 
-      {/* Target Mode Selector Tabs: Potholes, Vehicle Speed, or Both */}
+      {/* Target Mode Selector Tabs: All Road Damage vs Potholes Only */}
       <div className="bg-slate-900/95 px-3 py-2 border-b border-slate-800 flex items-center justify-between z-20">
         <div className="flex items-center gap-1.5 text-xs text-slate-300 shrink-0">
           <Layers className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
@@ -852,36 +1001,23 @@ export const MonitorPage: React.FC<MonitorPageProps> = ({
         <div className="flex items-center gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800">
           <button
             onClick={() => handleModeChange('both')}
-            className={`px-2 sm:px-2.5 py-1 rounded-lg text-[10px] sm:text-[11px] font-bold transition-all ${
+            className={`px-2.5 py-1 rounded-lg text-[10px] sm:text-[11px] font-bold transition-all ${
               detectionMode === 'both'
                 ? 'bg-blue-600 text-white shadow-sm'
                 : 'text-slate-400 hover:text-white'
             }`}
           >
-            <span className="hidden sm:inline">All (Potholes & Speed)</span>
-            <span className="sm:hidden">All</span>
+            <span>All Damage (Potholes & Cracks)</span>
           </button>
           <button
             onClick={() => handleModeChange('potholes')}
-            className={`px-2 sm:px-2.5 py-1 rounded-lg text-[10px] sm:text-[11px] font-bold transition-all ${
+            className={`px-2.5 py-1 rounded-lg text-[10px] sm:text-[11px] font-bold transition-all ${
               detectionMode === 'potholes'
                 ? 'bg-rose-600 text-white shadow-sm'
                 : 'text-slate-400 hover:text-white'
             }`}
           >
-            <span className="hidden sm:inline">🕳️ Potholes Only</span>
-            <span className="sm:hidden">🕳️ Potholes</span>
-          </button>
-          <button
-            onClick={() => handleModeChange('speed')}
-            className={`px-2 sm:px-2.5 py-1 rounded-lg text-[10px] sm:text-[11px] font-bold transition-all ${
-              detectionMode === 'speed'
-                ? 'bg-amber-600 text-white shadow-sm'
-                : 'text-slate-400 hover:text-white'
-            }`}
-          >
-            <span className="hidden sm:inline">🏎️ Car/Scooter Speed Only</span>
-            <span className="sm:hidden">🏎️ Speeds</span>
+            <span>🕳️ Potholes Only</span>
           </button>
         </div>
       </div>
@@ -946,21 +1082,16 @@ export const MonitorPage: React.FC<MonitorPageProps> = ({
               containerDimensions.height
             );
 
-            const isSpeed = det.type === 'vehicle_speed';
             const isHigh = det.severity === 'high';
             const isMed = det.severity === 'medium';
 
-            const strokeColor = isSpeed
-              ? 'border-cyan-400 bg-cyan-500/10 shadow-lg shadow-cyan-400/20'
-              : isHigh
+            const strokeColor = isHigh
               ? 'border-rose-500 bg-rose-500/15 shadow-lg shadow-rose-500/30'
               : isMed
               ? 'border-amber-400 bg-amber-400/15 shadow-lg shadow-amber-400/30'
               : 'border-blue-400 bg-blue-400/15 shadow-lg shadow-blue-400/30';
 
-            const badgeColor = isSpeed
-              ? 'bg-cyan-500 text-slate-950'
-              : isHigh
+            const badgeColor = isHigh
               ? 'bg-rose-600 text-white'
               : isMed
               ? 'bg-amber-500 text-slate-950'
@@ -1031,10 +1162,8 @@ export const MonitorPage: React.FC<MonitorPageProps> = ({
             </div>
             <span className="text-[10px] text-cyan-300 font-mono font-bold tracking-widest mt-2 uppercase bg-slate-950/80 px-2.5 py-0.5 rounded-full border border-cyan-400/30">
               {detectionMode === 'potholes'
-                ? 'High-Precision Road Surface Scan'
-                : detectionMode === 'speed'
-                ? 'Vehicle Speed Radar & Scooter Tracking'
-                : 'Road Hazards & Vehicle Speed Active'}
+                ? 'High-Precision Pothole Scan'
+                : 'Road Hazards & Cracks Active'}
             </span>
           </div>
         )}
@@ -1064,7 +1193,7 @@ export const MonitorPage: React.FC<MonitorPageProps> = ({
 
             <p className="text-xs text-slate-400 max-w-xs mb-5 leading-relaxed">
               {cameraError ||
-                'Mount your phone on the car dashboard or motorcycle/scooter handle. Start monitoring to detect potholes and track moving vehicle speeds with real-time audio chimes and automatic photo database saves.'}
+                'Mount your phone on the vehicle dashboard. Capture damaged road photos to automatically detect potholes and cracks with real-time GPS geotagging on the Hazard Map.'}
             </p>
 
             <div className="flex flex-col gap-2.5 w-full max-w-xs">
@@ -1081,7 +1210,7 @@ export const MonitorPage: React.FC<MonitorPageProps> = ({
                 className="w-full py-3 px-4 rounded-2xl bg-slate-900 border border-slate-700/80 hover:bg-slate-800 text-cyan-400 font-semibold text-xs flex items-center justify-center gap-2 transition-all"
               >
                 <Zap className="w-3.5 h-3.5" />
-                Test Road Hazard / Speed Demo
+                Test Road Hazard Demo
               </button>
 
               {(lastSummary || driveSessionService.getLastSummary()) && onViewSummary && (
@@ -1101,12 +1230,9 @@ export const MonitorPage: React.FC<MonitorPageProps> = ({
         {currentDetections.length > 0 && (
           <div className="absolute top-16 inset-x-4 z-20 flex flex-col gap-2 max-w-md mx-auto pointer-events-none">
             {currentDetections.map((detection, index) => {
-              const isSpeed = detection.type === 'vehicle_speed';
               const isHigh = detection.severity === 'high';
 
-              const borderColor = isSpeed
-                ? 'border-blue-400 bg-blue-950/90 text-blue-100 shadow-blue-500/40'
-                : isHigh
+              const borderColor = isHigh
                 ? 'border-red-500 bg-red-950/90 text-red-200 shadow-red-500/30'
                 : 'border-amber-500 bg-amber-950/90 text-amber-200 shadow-amber-500/30';
 
@@ -1117,13 +1243,11 @@ export const MonitorPage: React.FC<MonitorPageProps> = ({
                 >
                   <div className="flex items-center gap-3">
                     <div className="p-2 rounded-xl bg-black/40 text-xl">
-                      {isSpeed ? '🏎️' : detection.type === 'pothole' ? '🕳️' : '⚡'}
+                      {detection.type === 'pothole' ? '🕳️' : '⚡'}
                     </div>
                     <div>
                       <h4 className="font-black text-sm tracking-wide flex items-center gap-1.5">
-                        {isSpeed
-                          ? `${(detection.vehicleType || 'vehicle').toUpperCase()} SPEED DETECTED`
-                          : detection.type === 'pothole'
+                        {detection.type === 'pothole'
                           ? 'POTHOLE DETECTED'
                           : 'ROAD CRACK DETECTED'}
                       </h4>
@@ -1136,19 +1260,13 @@ export const MonitorPage: React.FC<MonitorPageProps> = ({
                   </div>
 
                   <div className="text-right shrink-0">
-                    {isSpeed && detection.estimatedSpeedKmh ? (
-                      <div className="text-base font-black font-mono text-cyan-300">
-                        {detection.estimatedSpeedKmh} <span className="text-[10px]">km/h</span>
-                      </div>
-                    ) : (
-                      <span
-                        className={`text-[10px] font-black uppercase px-2 py-0.5 rounded-full ${
-                          isHigh ? 'bg-red-600 text-white' : 'bg-amber-600 text-white'
-                        }`}
-                      >
-                        {detection.severity}
-                      </span>
-                    )}
+                    <span
+                      className={`text-[10px] font-black uppercase px-2 py-0.5 rounded-full ${
+                        isHigh ? 'bg-red-600 text-white' : 'bg-amber-600 text-white'
+                      }`}
+                    >
+                      {detection.severity}
+                    </span>
                     <div className="text-[10px] font-mono opacity-80 mt-0.5">
                       Conf: {Math.round(detection.confidence * 100)}%
                     </div>
@@ -1224,59 +1342,146 @@ export const MonitorPage: React.FC<MonitorPageProps> = ({
           </div>
         </div>
 
-        {/* Start / Stop Monitoring Action Row */}
-        <div className="flex items-center gap-2">
-          {isMonitoring ? (
-            <button
-              onClick={() => onToggleMonitoring(false)}
-              className="flex-1 py-3.5 rounded-2xl bg-rose-600 hover:bg-rose-700 active:scale-98 font-bold text-white shadow-xl shadow-rose-600/30 flex items-center justify-center gap-2 text-base transition-all"
-            >
-              <CameraOff className="w-5 h-5" />
-              STOP MONITORING
-            </button>
-          ) : (
-            <button
-              onClick={() => onToggleMonitoring(true)}
-              className="flex-1 py-3.5 rounded-2xl bg-blue-600 hover:bg-blue-500 active:scale-98 font-bold text-white shadow-xl shadow-blue-600/30 flex items-center justify-center gap-2 text-base transition-all"
-            >
-              <Camera className="w-5 h-5" />
-              START REAL-TIME MONITORING
-            </button>
-          )}
-
-          {/* Quick Flashlight Button */}
+        {/* Manual Shutter & Real-Time Monitoring Controls */}
+        <div className="flex flex-col sm:flex-row items-center gap-2">
+          {/* Prominent Manual Shutter Button for Geotagging to Hazard Map */}
           <button
-            onClick={toggleFlashlight}
-            className={`p-3.5 rounded-2xl border transition-all flex items-center justify-center ${
-              flashlightOn
-                ? 'bg-amber-400 border-amber-300 text-slate-950 shadow-lg shadow-amber-400/40 animate-pulse'
-                : 'bg-slate-950/80 border-slate-800 text-slate-300 hover:text-amber-400'
-            }`}
-            title={flashlightOn ? 'Flashlight ON (Tap to turn OFF)' : 'Flashlight OFF (Tap to turn ON)'}
+            onClick={handleManualCaptureAndMap}
+            disabled={isManualCapturing}
+            className="w-full sm:flex-1 py-3.5 px-4 rounded-2xl bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-700 hover:from-blue-500 hover:to-indigo-500 active:scale-98 text-white font-extrabold text-sm sm:text-base flex items-center justify-center gap-2.5 shadow-xl shadow-blue-600/30 transition-all border border-blue-400/30 disabled:opacity-50"
           >
-            {flashlightOn ? (
-              <Flashlight className="w-5 h-5 fill-slate-950" />
+            {isManualCapturing ? (
+              <>
+                <RefreshCw className="w-5 h-5 animate-spin text-cyan-300" />
+                <span>AI Analyzing & Geotagging...</span>
+              </>
             ) : (
-              <FlashlightOff className="w-5 h-5" />
+              <>
+                <Camera className="w-5 h-5 text-white" />
+                <span>📸 Capture Road Damage & Geotag</span>
+              </>
             )}
           </button>
+
+          <div className="flex items-center gap-2 w-full sm:w-auto">
+            {isMonitoring ? (
+              <button
+                onClick={() => onToggleMonitoring(false)}
+                className="flex-1 sm:flex-initial py-3 px-4 rounded-2xl bg-rose-600/90 hover:bg-rose-700 active:scale-98 font-bold text-white shadow-lg shadow-rose-600/20 flex items-center justify-center gap-2 text-xs sm:text-sm transition-all border border-rose-500/30"
+              >
+                <CameraOff className="w-4 h-4" />
+                <span>Stop Auto</span>
+              </button>
+            ) : (
+              <button
+                onClick={() => onToggleMonitoring(true)}
+                className="flex-1 sm:flex-initial py-3 px-4 rounded-2xl bg-slate-800 hover:bg-slate-700 active:scale-98 font-bold text-slate-200 shadow-md flex items-center justify-center gap-2 text-xs sm:text-sm transition-all border border-slate-700"
+              >
+                <Radio className="w-4 h-4 text-emerald-400" />
+                <span>Auto Stream</span>
+              </button>
+            )}
+
+            {/* Quick Flashlight Button */}
+            <button
+              onClick={toggleFlashlight}
+              className={`p-3 rounded-2xl border transition-all flex items-center justify-center ${
+                flashlightOn
+                  ? 'bg-amber-400 border-amber-300 text-slate-950 shadow-lg shadow-amber-400/40 animate-pulse'
+                  : 'bg-slate-950/80 border-slate-800 text-slate-300 hover:text-amber-400'
+              }`}
+              title={flashlightOn ? 'Flashlight ON (Tap to turn OFF)' : 'Flashlight OFF (Tap to turn ON)'}
+            >
+              {flashlightOn ? (
+                <Flashlight className="w-5 h-5 fill-slate-950" />
+              ) : (
+                <FlashlightOff className="w-5 h-5" />
+              )}
+            </button>
+          </div>
         </div>
+
+        {/* Manual Capture & Geotag Result Card */}
+        {manualCaptureResult && (
+          <div
+            className={`p-3.5 rounded-2xl border-2 backdrop-blur-md shadow-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 animate-in fade-in slide-in-from-bottom-2 duration-200 ${
+              manualCaptureResult.success
+                ? 'bg-emerald-950/90 border-emerald-500/60 text-emerald-100 shadow-emerald-900/30'
+                : 'bg-slate-900/90 border-amber-500/60 text-amber-100 shadow-amber-900/20'
+            }`}
+          >
+            <div className="flex items-center gap-3 min-w-0">
+              <div
+                className={`p-2.5 rounded-xl text-xl shrink-0 ${
+                  manualCaptureResult.success ? 'bg-emerald-500/20' : 'bg-amber-500/20'
+                }`}
+              >
+                {manualCaptureResult.success ? '📍' : '⚠️'}
+              </div>
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="font-extrabold text-sm">
+                    {manualCaptureResult.success ? 'Hazard Geotagged to Map!' : 'Capture Notice'}
+                  </span>
+                  {manualCaptureResult.damageClass && (
+                    <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-500/30 text-emerald-200 font-bold">
+                      {manualCaptureResult.damageClass}
+                    </span>
+                  )}
+                  {manualCaptureResult.severity && (
+                    <span
+                      className={`text-[9px] uppercase font-black px-2 py-0.5 rounded-full ${
+                        manualCaptureResult.severity === 'high'
+                          ? 'bg-red-600 text-white'
+                          : 'bg-amber-500 text-slate-950'
+                      }`}
+                    >
+                      {manualCaptureResult.severity}
+                    </span>
+                  )}
+                </div>
+                <p className="text-xs text-slate-300 mt-0.5 leading-snug">
+                  {manualCaptureResult.message}
+                </p>
+                {manualCaptureResult.coords && (
+                  <span className="text-[10px] font-mono text-cyan-300 mt-0.5 block">
+                    GPS: {manualCaptureResult.coords.lat.toFixed(5)}°, {manualCaptureResult.coords.lng.toFixed(5)}°
+                  </span>
+                )}
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 self-end sm:self-center shrink-0">
+              {manualCaptureResult.success && onNavigateToMap && (
+                <button
+                  onClick={() => onNavigateToMap(manualCaptureResult.recordId)}
+                  className="px-3.5 py-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 active:scale-95 text-slate-950 font-black text-xs flex items-center gap-1.5 shadow-lg shadow-emerald-500/25 transition-all"
+                >
+                  <MapPin className="w-3.5 h-3.5 fill-slate-950" />
+                  <span>View on Hazard Map 🗺️</span>
+                </button>
+              )}
+              <button
+                onClick={() => setManualCaptureResult(null)}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-white"
+                title="Dismiss"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Latest Detection Summary Card */}
         {latestSavedRecord && (
           <div className="p-2.5 rounded-xl bg-slate-950/60 border border-slate-800/80 flex items-center justify-between text-xs">
             <div className="flex items-center gap-2.5 min-w-0">
               <span className="text-xl">
-                {latestSavedRecord.type === 'vehicle_speed'
-                  ? '🏎️'
-                  : latestSavedRecord.type === 'pothole'
-                  ? '🕳️'
-                  : '⚡'}
+                {latestSavedRecord.type === 'pothole' ? '🕳️' : '⚡'}
               </span>
               <div className="min-w-0">
                 <div className="font-semibold text-slate-200 capitalize truncate">
                   Latest: {latestSavedRecord.type.replace('_', ' ')}
-                  {latestSavedRecord.estimatedSpeedKmh && ` (${latestSavedRecord.estimatedSpeedKmh} km/h)`}
                 </div>
                 <div className="text-[10px] text-slate-400 capitalize">
                   {latestSavedRecord.severity} severity • {latestSavedRecord.locationName}

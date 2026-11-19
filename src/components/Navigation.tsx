@@ -16,7 +16,7 @@ import {
 } from 'lucide-react';
 import { springs, modalOverlayVariants, buttonPressProps, leftDrawerVariants } from '../utils/motion';
 
-export type NavigationTab = 'dashboard' | 'monitor' | 'map' | 'history' | 'schedule' | 'evaluation' | 'download';
+export type NavigationTab = 'dashboard' | 'monitor' | 'map' | 'history' | 'evaluation';
 
 interface NavigationProps {
   currentTab: NavigationTab;
@@ -139,27 +139,6 @@ export const Navigation: React.FC<NavigationProps> = ({
             )}
           </motion.button>
 
-          {/* Download Tab */}
-          <motion.button
-            whileTap={{ scale: 0.92 }}
-            onClick={() => onTabChange('download')}
-            className={`flex-1 py-1 flex flex-col items-center gap-0.5 rounded-xl transition-colors relative z-10 ${
-              currentTab === 'download' ? 'text-blue-600 font-bold' : 'text-slate-500 hover:text-slate-800'
-            }`}
-          >
-            <div className="relative">
-              <Smartphone className={`w-4 h-4 ${currentTab === 'download' ? 'stroke-[2.5]' : ''}`} />
-            </div>
-            <span className="text-[10px] leading-tight">App</span>
-            {currentTab === 'download' && (
-              <motion.div
-                layoutId="activeMobileTabIndicator"
-                transition={springs.snappy}
-                className="absolute inset-0 bg-blue-50/80 rounded-xl -z-10"
-              />
-            )}
-          </motion.button>
-
         </div>
       </nav>
     </>
@@ -224,7 +203,7 @@ export const MobileSidebarDrawer: React.FC<MobileSidebarDrawerProps> = ({
                 </div>
                 <div>
                   <h3 className="font-black text-sm tracking-tight text-white">ROADGUARD</h3>
-                  <p className="text-[10px] text-slate-400">AI Vision & Speed Radar</p>
+                  <p className="text-[10px] text-slate-400">Feedback-Guided Road Damage AI</p>
                 </div>
               </div>
 
@@ -241,10 +220,9 @@ export const MobileSidebarDrawer: React.FC<MobileSidebarDrawerProps> = ({
               {[
                 { id: 'dashboard' as const, label: 'Dashboard', icon: LayoutDashboard },
                 { id: 'monitor' as const, label: 'Live Camera Monitor', icon: Camera, live: isMonitoring },
-                { id: 'map' as const, label: 'Hazard & Heatmap', icon: MapPin },
+                { id: 'map' as const, label: 'Hazard Map', icon: MapPin },
                 { id: 'history' as const, label: 'Detection History', icon: History, count: unreadCount },
                 { id: 'evaluation' as const, label: 'Research & Evaluation', icon: FlaskConical },
-                { id: 'download' as const, label: 'Download PWA App', icon: Smartphone },
               ].map((item) => {
                 const Icon = item.icon;
                 const isActive = currentTab === item.id;

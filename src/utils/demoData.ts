@@ -238,7 +238,7 @@ export function createSampleRoadCanvas(type: 'pothole' | 'crack' | 'broken_sign'
 export interface DemoSample {
   id: string;
   name: string;
-  category: 'pothole' | 'crack' | 'broken_sign' | 'car_speed' | 'scooter_speed' | 'clean';
+  category: 'pothole' | 'crack' | 'broken_sign' | 'clean';
   badge: string;
   expectedHazard: string;
   severity: 'high' | 'medium' | 'low' | 'none';
@@ -250,34 +250,16 @@ export const DEMO_SAMPLES: DemoSample[] = [
     id: 'sample-pothole',
     name: 'Asphalt Deep Pothole',
     category: 'pothole',
-    badge: 'Pothole',
+    badge: 'Pothole (D40)',
     expectedHazard: 'Deep asphalt cavity in driving line',
     severity: 'high',
     generateImage: () => createSampleRoadCanvas('pothole'),
   },
   {
-    id: 'sample-car-speed',
-    name: 'Moving Car Speed Radar',
-    category: 'car_speed',
-    badge: 'Car Speed (68 km/h)',
-    expectedHazard: 'Moving Sedan car cruising at 68 km/h',
-    severity: 'high',
-    generateImage: () => createSampleRoadCanvas('car_speed'),
-  },
-  {
-    id: 'sample-scooter-speed',
-    name: 'Moving Scooter Speed Radar',
-    category: 'scooter_speed',
-    badge: 'Scooter Speed (48 km/h)',
-    expectedHazard: 'Scooter / Two-wheeler traveling at 48 km/h',
-    severity: 'low',
-    generateImage: () => createSampleRoadCanvas('scooter_speed'),
-  },
-  {
     id: 'sample-crack',
     name: 'Fatigue Surface Crack',
     category: 'crack',
-    badge: 'Road Crack',
+    badge: 'Road Crack (D00)',
     expectedHazard: 'Longitudinal road cracking',
     severity: 'medium',
     generateImage: () => createSampleRoadCanvas('crack'),

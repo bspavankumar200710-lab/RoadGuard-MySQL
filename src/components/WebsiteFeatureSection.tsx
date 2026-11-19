@@ -61,32 +61,32 @@ export const WebsiteFeatureSection: React.FC<WebsiteFeatureSectionProps> = ({
           </button>
         </div>
 
-        {/* Card 2: Moving Vehicle Velocity & Radar */}
+        {/* Card 2: Road Crack & Surface Fracture Analysis */}
         <div className="min-w-[260px] sm:min-w-0 flex-1 bg-white rounded-2xl p-4 sm:p-5 border border-slate-200/90 shadow-sm hover:border-slate-300 transition-all flex flex-col justify-between">
           <div>
-            <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-sky-50 text-sky-600 flex items-center justify-center text-lg sm:text-xl mb-2.5 sm:mb-3 border border-sky-100">
-              🏎️
+            <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center text-lg sm:text-xl mb-2.5 sm:mb-3 border border-amber-100">
+              ⚡
             </div>
             <h4 className="font-bold text-slate-900 text-sm sm:text-base mb-1">
-              Vehicle & Scooter Speed Radar
+              Road Crack & Fracture Analysis
             </h4>
             <p className="text-xs text-slate-600 leading-relaxed mb-2.5">
-              Tracks surrounding cars, two-wheelers, and commercial vehicles, estimating real-time approach velocity in km/h relative to speed limits.
+              Identifies longitudinal, transverse, and alligator cracking patterns before deep pavement failure occurs.
             </p>
             <div className="space-y-1 text-[11px] text-slate-500">
               <div className="flex items-center gap-1.5">
-                <span className="text-emerald-500">✓</span> Optical frame displacement velocity
+                <span className="text-emerald-500">✓</span> RDD2022 multi-class fracture isolation
               </div>
               <div className="flex items-center gap-1.5">
-                <span className="text-emerald-500">✓</span> Excessive speed & audio warnings
+                <span className="text-emerald-500">✓</span> High-confidence pattern classification
               </div>
             </div>
           </div>
           <button
             onClick={onOpenDemo}
-            className="mt-3 pt-2.5 border-t border-slate-100 text-xs font-bold text-sky-600 hover:text-sky-700 flex items-center justify-between group"
+            className="mt-3 pt-2.5 border-t border-slate-100 text-xs font-bold text-amber-600 hover:text-amber-700 flex items-center justify-between group"
           >
-            <span>Simulate Radar in Lab</span>
+            <span>Test Cracks in Lab</span>
             <ChevronRight className="w-4 h-4 group-hover:translate-x-0.5 transition-transform" />
           </button>
         </div>
