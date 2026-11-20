@@ -38,13 +38,13 @@ import {
 type EvalSectionTab = 'live-history' | 'baselines' | 'mechanism' | 'dataset' | 'deployment';
 
 export const EvaluationPage: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<EvalSectionTab>('live-history');
+  const [activeTab, setActiveTab] = useState<EvalSectionTab>('baselines');
   const [report, setReport] = useState<FullBenchmarkReport | null>(null);
   const [isRunning, setIsRunning] = useState<boolean>(false);
   const [progressPct, setProgressPct] = useState<number>(0);
   const [progressLabel, setProgressLabel] = useState<string>('');
   const [selectedSampleIdx, setSelectedSampleIdx] = useState<number>(0);
-  const [sampleFilter, setSampleFilter] = useState<'all' | 'positive' | 'negative'>('all');
+  const [sampleFilter, setSampleFilter] = useState<'all' | 'damage' | 'negatives' | 'false_positives' | 'missed_detections'>('all');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [useLiveGemini, setUseLiveGemini] = useState<boolean>(false);
 
@@ -59,10 +59,38 @@ export const EvaluationPage: React.FC = () => {
   const [actionSuccessMsg, setActionSuccessMsg] = useState<string | null>(null);
   const [previewImage, setPreviewImage] = useState<string | null>(null);
 
+  const executeBenchmark = useCallback(
+    async (liveApiOverride?: boolean, recordsOverride?: RoadHazardRecord[]) => {
+      const useLive = liveApiOverride ?? useLiveGemini;
+      const recordsToUse = recordsOverride ?? liveDetections;
+      setIsRunning(true);
+      setErrorMsg(null);
+      setProgressPct(0);
+      setProgressLabel('Analyzing verified detection cohort from database...');
+      try {
+        const result = await runHeldOutEvaluationSuite(
+          recordsToUse,
+          (pct, label) => {
+            setProgressPct(pct);
+            setProgressLabel(label);
+          },
+          { useLiveApi: useLive }
+        );
+        setReport(result);
+      } catch (err: any) {
+        setErrorMsg(err?.message || 'Evaluation run failed');
+      } finally {
+        setIsRunning(false);
+      }
+    },
+    [useLiveGemini, liveDetections]
+  );
+
   // Subscribe to live detections from MySQL and IndexedDB
   useEffect(() => {
     const unsubDetections = detectionService.subscribe((records) => {
       setLiveDetections(records);
+      executeBenchmark(false, records);
     });
     const unsubStats = detectionService.subscribeLearning((stats) => {
       setAiStats(stats);
@@ -71,6 +99,7 @@ export const EvaluationPage: React.FC = () => {
       unsubDetections();
       unsubStats();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleConfirmLiveHazard = async (id: string) => {
@@ -78,6 +107,7 @@ export const EvaluationPage: React.FC = () => {
     if (res) {
       setActionSuccessMsg(`Hazard verified as valid road damage in database. Model reinforced!`);
       setTimeout(() => setActionSuccessMsg(null), 4000);
+      executeBenchmark(false);
     }
   };
 
@@ -88,38 +118,11 @@ export const EvaluationPage: React.FC = () => {
     if (res) {
       setActionSuccessMsg(`False alarm corrected! Feedback rule created to suppress ${disputeReason.replace('_', ' ')}.`);
       setTimeout(() => setActionSuccessMsg(null), 4000);
+      executeBenchmark(false);
     }
     setDisputeRecordId(null);
     setDisputeNotes('');
   };
-
-  const executeBenchmark = useCallback(async (liveApiOverride?: boolean) => {
-    const useLive = liveApiOverride ?? useLiveGemini;
-    setIsRunning(true);
-    setErrorMsg(null);
-    setProgressPct(0);
-    setProgressLabel('Initializing split isolation audit & calibration rules...');
-    try {
-      const result = await runHeldOutEvaluationSuite(
-        (pct, label) => {
-          setProgressPct(pct);
-          setProgressLabel(label);
-        },
-        { useLiveApi: useLive }
-      );
-      setReport(result);
-    } catch (err: any) {
-      setErrorMsg(err?.message || 'Evaluation run failed');
-    } finally {
-      setIsRunning(false);
-    }
-  }, [useLiveGemini]);
-
-  useEffect(() => {
-    executeBenchmark(false);
-    // Run deterministic benchmark once on mount without burning live API quota
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   const handleDownloadJson = () => {
     if (!report) return;
@@ -162,13 +165,49 @@ export const EvaluationPage: React.FC = () => {
   const stdCand = report?.candidates.find((c) => c.candidateId === 'gemini-standard');
   const fbCand = report?.candidates.find((c) => c.candidateId === 'roadguard-feedback');
 
-  const filteredSampleIndices = report
-    ? fbCand!.records
+  const filterCounts = report && fbCand && stdCand && edgeCand
+    ? {
+        all: fbCand.records.length,
+        damage: fbCand.records.filter((r) => r.sample.isPositive).length,
+        negatives: fbCand.records.filter((r) => !r.sample.isPositive).length,
+        false_positives: fbCand.records.filter(
+          (r, i) =>
+            r.imageFalsePositive ||
+            Boolean(stdCand.records[i]?.imageFalsePositive) ||
+            Boolean(edgeCand.records[i]?.imageFalsePositive)
+        ).length,
+        missed_detections: fbCand.records.filter(
+          (r, i) =>
+            r.imageFalseNegative ||
+            Boolean(stdCand.records[i]?.imageFalseNegative) ||
+            Boolean(edgeCand.records[i]?.imageFalseNegative)
+        ).length,
+      }
+    : { all: 0, damage: 0, negatives: 0, false_positives: 0, missed_detections: 0 };
+
+  const filteredSampleIndices = report && fbCand
+    ? fbCand.records
         .map((rec, idx) => ({ rec, idx }))
-        .filter(({ rec }) => {
-          if (sampleFilter === 'positive') return rec.sample.isPositive;
-          if (sampleFilter === 'negative') return !rec.sample.isPositive;
-          return true;
+        .filter(({ rec, idx }) => {
+          const stdR = stdCand?.records[idx];
+          const edgeR = edgeCand?.records[idx];
+          if (sampleFilter === 'damage') return rec.sample.isPositive;
+          if (sampleFilter === 'negatives') return !rec.sample.isPositive;
+          if (sampleFilter === 'false_positives') {
+            return (
+              rec.imageFalsePositive ||
+              Boolean(stdR?.imageFalsePositive) ||
+              Boolean(edgeR?.imageFalsePositive)
+            );
+          }
+          if (sampleFilter === 'missed_detections') {
+            return (
+              rec.imageFalseNegative ||
+              Boolean(stdR?.imageFalseNegative) ||
+              Boolean(edgeR?.imageFalseNegative)
+            );
+          }
+          return true; // 'all'
         })
         .map(({ idx }) => idx)
     : [];
@@ -229,7 +268,7 @@ export const EvaluationPage: React.FC = () => {
             className="py-2.5 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 disabled:opacity-50 text-white text-xs font-semibold flex items-center gap-2 transition-colors whitespace-nowrap shrink-0"
           >
             <Play className="w-3.5 h-3.5" />
-            <span>{isRunning ? `Running (${progressPct}%)` : 'Re-Run Held-Out Benchmark'}</span>
+            <span>{isRunning ? `Running (${progressPct}%)` : (report?.isLiveCohort ? 'Re-Run Verified Benchmark' : 'Re-Run Held-Out Benchmark')}</span>
           </button>
 
           <button
@@ -645,7 +684,7 @@ export const EvaluationPage: React.FC = () => {
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
             <div className="bg-white border border-slate-200 rounded-xl p-4 space-y-1">
               <span className="text-xs text-slate-500 font-medium block">
-                False Positive Rate (Untouched Test)
+                False Positive Rate ({report.isLiveCohort ? 'Verified History' : 'Untouched Test'})
               </span>
               <div className="flex items-baseline gap-2 font-mono tabular-nums">
                 <span className="text-2xl font-bold text-emerald-700">
@@ -690,7 +729,7 @@ export const EvaluationPage: React.FC = () => {
                   {(fbCand.mAP50 * 100).toFixed(1)}%
                 </span>
                 <span className="text-xs text-slate-500">
-                  vs {(edgeCand.mAP50 * 100).toFixed(1)}% edge
+                  vs {(edgeCand.mAP50 * 100).toFixed(1)}% YOLOv5
                 </span>
               </div>
               <p className="text-[11px] text-slate-500">
@@ -700,17 +739,16 @@ export const EvaluationPage: React.FC = () => {
 
             <div className="bg-white border border-slate-200 rounded-xl p-4 space-y-1">
               <span className="text-xs text-slate-500 font-medium block">
-                Split Leakage Verification
+                {report.isLiveCohort ? 'Live Verified Cohort' : 'Split Leakage Verification'}
               </span>
-              <div className="flex items-center gap-1.5">
-                <CheckCircle2 className="w-5 h-5 text-emerald-600" />
-                <span className="text-xl font-bold text-slate-900 font-mono tabular-nums">
-                  {report.splitAudit.overlappingNearDuplicateGroups.length} Overlap
+              <div className="flex items-center gap-1.5 font-mono tabular-nums">
+                <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
+                <span className="text-xl font-bold text-slate-900">
+                  {report.cohortCount} Samples
                 </span>
               </div>
               <p className="text-[11px] text-slate-500">
-                {report.splitAudit.heldOutRegions.length} unseen test regions ·{' '}
-                {report.splitAudit.negativeTestCount} hard negatives
+                {report.positiveCount} confirmed damage · {report.negativeCount} confirmed negatives
               </p>
             </div>
           </div>
@@ -719,17 +757,24 @@ export const EvaluationPage: React.FC = () => {
           <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
             <div className="px-5 py-4 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
               <div>
-                <h3 className="text-sm font-bold text-slate-900">
-                  Identical Held-Out Test Set Comparison (n = {report.splitAudit.heldOutTestCount})
-                </h3>
+                <div className="flex items-center gap-2">
+                  <h3 className="text-sm font-bold text-slate-900">
+                    {report.isLiveCohort
+                      ? `Latest ${report.cohortCount} Verified Samples Comparison (n = ${report.cohortCount})`
+                      : `Identical Held-Out Test Set Comparison (n = ${report.cohortCount})`}
+                  </h3>
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-blue-100 text-blue-800">
+                    {report.isLiveCohort ? 'Live History Connected' : 'Held-Out Test Set'}
+                  </span>
+                </div>
                 <p className="text-xs text-slate-500 mt-0.5">
-                  Task metrics are separated strictly into Localized Bounding-Box Detection
-                  (IoU-matched) and Image-Level Screening / Negative-Case Rejection.
+                  Task metrics are dynamically calculated across identical verified samples with one-to-one IoU matching.
                 </p>
               </div>
-              <span className="text-xs font-mono text-slate-500">
-                Run {report.runId}
-              </span>
+              <div className="text-xs text-slate-500 flex items-center gap-2 font-mono">
+                <Clock className="w-3.5 h-3.5 text-slate-400" />
+                <span>Last Updated: {new Date(report.executedAt).toLocaleTimeString()}</span>
+              </div>
             </div>
 
             <div className="overflow-x-auto">
@@ -800,14 +845,18 @@ export const EvaluationPage: React.FC = () => {
 
           {/* Hard-Negative Category Breakdown */}
           <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
-            <div className="px-5 py-4 border-b border-slate-200">
-              <h3 className="text-sm font-bold text-slate-900">
-                Hard-Negative False Positive Breakdown by Confusing Category
-              </h3>
-              <p className="text-xs text-slate-500 mt-0.5">
-                Counts false hazard alerts triggered on unseen manhole covers, shadows, rainwater
-                puddles, paint markings, and speed breakers.
-              </p>
+            <div className="px-5 py-4 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div>
+                <h3 className="text-sm font-bold text-slate-900">
+                  Hard-Negative False Positive Breakdown by Confusing Category
+                </h3>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Counts actual false-positive alerts generated on confirmed negative samples from live history across confusing road features.
+                </p>
+              </div>
+              <span className="text-xs font-mono text-slate-500">
+                {report.negativeCount} Verified Negatives
+              </span>
             </div>
             <div className="overflow-x-auto">
               <table className="w-full text-left border-collapse text-xs">
@@ -815,34 +864,42 @@ export const EvaluationPage: React.FC = () => {
                   <tr className="border-b border-slate-200 bg-slate-50 text-slate-600">
                     <th className="py-2.5 px-4 font-semibold">Negative Category</th>
                     <th className="py-2.5 px-3 font-semibold text-right">Test Samples</th>
-                    <th className="py-2.5 px-3 font-semibold text-right">Edge Baseline FP</th>
-                    <th className="py-2.5 px-3 font-semibold text-right">Standard Gemini FP</th>
+                    <th className="py-2.5 px-3 font-semibold text-right">YOLOv5 False Positives</th>
+                    <th className="py-2.5 px-3 font-semibold text-right">Standard Gemini False Positives</th>
                     <th className="py-2.5 px-4 font-semibold text-right">
-                      RoadGuard Verified Feedback FP
+                      RoadGuard Verified Feedback False Positives
                     </th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 font-mono tabular-nums">
-                  {Object.keys(fbCand.negativeFprByCategory).map((cat) => {
-                    const edgeCat = edgeCand.negativeFprByCategory[cat];
-                    const stdCat = stdCand.negativeFprByCategory[cat];
-                    const fbCat = fbCand.negativeFprByCategory[cat];
+                  {[
+                    'manhole',
+                    'shadow',
+                    'water_puddle',
+                    'paint_marking',
+                    'speed_breaker',
+                    'normal_road',
+                  ].map((cat) => {
+                    const edgeCat = edgeCand.negativeFprByCategory[cat] || { total: 0, fp: 0, fpr: 0 };
+                    const stdCat = stdCand.negativeFprByCategory[cat] || { total: 0, fp: 0, fpr: 0 };
+                    const fbCat = fbCand.negativeFprByCategory[cat] || { total: 0, fp: 0, fpr: 0 };
+                    const testSamples = Math.max(edgeCat.total, stdCat.total, fbCat.total);
                     return (
                       <tr key={cat} className="hover:bg-slate-50">
                         <td className="py-3 px-4 font-sans font-medium text-slate-900 capitalize">
                           {cat.replace('_', ' ')}
                         </td>
-                        <td className="py-3 px-3 text-right text-slate-600">{fbCat.total}</td>
+                        <td className="py-3 px-3 text-right text-slate-600 font-semibold">{testSamples}</td>
                         <td className="py-3 px-3 text-right text-slate-700">
-                          {edgeCat?.fp ?? 0} / {edgeCat?.total ?? 0} (
-                          {((edgeCat?.fpr ?? 0) * 100).toFixed(0)}%)
+                          {edgeCat.fp} / {testSamples} (
+                          {(edgeCat.fpr * 100).toFixed(0)}%)
                         </td>
                         <td className="py-3 px-3 text-right text-rose-700 font-semibold">
-                          {stdCat?.fp ?? 0} / {stdCat?.total ?? 0} (
-                          {((stdCat?.fpr ?? 0) * 100).toFixed(0)}%)
+                          {stdCat.fp} / {testSamples} (
+                          {(stdCat.fpr * 100).toFixed(0)}%)
                         </td>
                         <td className="py-3 px-4 text-right text-emerald-700 font-bold">
-                          {fbCat.fp} / {fbCat.total} ({(fbCat.fpr * 100).toFixed(0)}%)
+                          {fbCat.fp} / {testSamples} ({(fbCat.fpr * 100).toFixed(0)}%)
                         </td>
                       </tr>
                     );
@@ -852,90 +909,130 @@ export const EvaluationPage: React.FC = () => {
             </div>
           </div>
 
-          {/* Interactive Per-Image Bounding Box & Rule-Gating Inspector */}
+          {/* Interactive Per-Image Bounding Box & Sample Inspector */}
           <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
             <div className="px-5 py-4 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div>
                 <h3 className="text-sm font-bold text-slate-900">
-                  Per-Image Held-Out Sample Inspector (GT vs Predicted Boxes)
+                  Per-Image Sample Inspector (GT vs Predicted Boxes)
                 </h3>
                 <p className="text-xs text-slate-500 mt-0.5">
-                  Inspect localized bounding boxes, IoU overlap, and verified rule suppression on any
-                  held-out sample.
+                  Visual inspection tool connected to the latest {report.cohortCount} unique verified image samples from detection history.
                 </p>
               </div>
-              <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-lg">
-                {(['all', 'positive', 'negative'] as const).map((f) => (
+              <div className="flex flex-wrap items-center gap-1 p-1 bg-slate-100 rounded-lg">
+                {(
+                  [
+                    { id: 'all', label: `All (${filterCounts.all})` },
+                    { id: 'damage', label: `Damage (${filterCounts.damage})` },
+                    { id: 'negatives', label: `Negatives (${filterCounts.negatives})` },
+                    { id: 'false_positives', label: `False Positives (${filterCounts.false_positives})` },
+                    { id: 'missed_detections', label: `Missed Detections (${filterCounts.missed_detections})` },
+                  ] as const
+                ).map((f) => (
                   <button
-                    key={f}
-                    onClick={() => setSampleFilter(f)}
-                    className={`px-2.5 py-1 text-xs font-medium rounded-md capitalize whitespace-nowrap ${
-                      sampleFilter === f
-                        ? 'bg-white text-slate-900 shadow-sm'
+                    key={f.id}
+                    onClick={() => setSampleFilter(f.id)}
+                    className={`px-2.5 py-1 text-xs font-medium rounded-md whitespace-nowrap transition-colors ${
+                      sampleFilter === f.id
+                        ? 'bg-white text-slate-900 shadow-sm font-semibold'
                         : 'text-slate-600 hover:text-slate-900'
                     }`}
                   >
-                    {f === 'all' ? 'All (24)' : f === 'positive' ? 'Damage (12)' : 'Negatives (12)'}
+                    {f.label}
                   </button>
                 ))}
               </div>
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-12 divide-y lg:divide-y-0 lg:divide-x divide-slate-200">
-              {/* Sample List */}
-              <div className="lg:col-span-5 max-h-[420px] overflow-y-auto divide-y divide-slate-100">
-                {filteredSampleIndices.map((idx) => {
-                  const stdR = stdCand.records[idx];
-                  const fbR = fbCand.records[idx];
-                  const isSelected = idx === activeSampleIdx;
-                  const fpSuppressed = stdR.imageFalsePositive && fbR.imageTrueNegative;
-                  return (
-                    <button
-                      key={fbR.sample.id}
-                      onClick={() => setSelectedSampleIdx(idx)}
-                      className={`w-full text-left px-4 py-3 flex items-center justify-between gap-3 transition-colors ${
-                        isSelected ? 'bg-slate-100' : 'hover:bg-slate-50'
-                      }`}
-                    >
-                      <div className="min-w-0">
-                        <div className="text-xs font-semibold text-slate-900 truncate">
-                          {fbR.sample.title}
-                        </div>
-                        <div className="text-[11px] text-slate-500 flex items-center gap-1.5 mt-0.5">
-                          <span>{fbR.sample.region}</span>
-                          <span aria-hidden="true">·</span>
-                          <span>{fbR.sample.lighting}</span>
-                          <span aria-hidden="true">·</span>
-                          <span className="font-mono tabular-nums">
-                            {fbR.sample.isPositive ? `IoU ${(fbR.maxIoU * 100).toFixed(0)}%` : 'Negative'}
-                          </span>
-                        </div>
-                      </div>
-                      <span
-                        className={`text-[11px] font-mono font-semibold shrink-0 ${
-                          fpSuppressed
-                            ? 'text-emerald-700'
-                            : fbR.imageFalseNegative || fbR.imageFalsePositive
-                            ? 'text-rose-700'
-                            : 'text-slate-600'
+              {/* Sample List (left) */}
+              <div className="lg:col-span-5 max-h-[520px] overflow-y-auto divide-y divide-slate-100">
+                {filteredSampleIndices.length === 0 ? (
+                  <div className="p-8 text-center text-xs text-slate-500">
+                    No samples match the selected filter.
+                  </div>
+                ) : (
+                  filteredSampleIndices.map((idx) => {
+                    const fbR = fbCand.records[idx];
+                    const isSelected = idx === activeSampleIdx;
+                    const sample = fbR.sample as any;
+                    const isPos = sample.isPositive;
+                    const thumbUrl = sample.thumbnailUrl || sample.originalImageUrl || fbR.imageBase64;
+                    const sampleId = sample.sourceRecordId ? sample.sourceRecordId.replace('hazard_', '').slice(0, 10) : sample.id;
+
+                    const statusBadge = fbR.imageTruePositive
+                      ? { label: 'TP', bg: 'bg-emerald-100 text-emerald-800' }
+                      : fbR.imageTrueNegative
+                      ? { label: 'TN', bg: 'bg-slate-100 text-slate-700' }
+                      : fbR.imageFalsePositive
+                      ? { label: 'FP', bg: 'bg-rose-100 text-rose-800' }
+                      : { label: 'FN', bg: 'bg-orange-100 text-orange-800' };
+
+                    return (
+                      <button
+                        key={sample.id || idx}
+                        onClick={() => setSelectedSampleIdx(idx)}
+                        className={`w-full text-left px-4 py-3 flex items-center gap-3 transition-colors ${
+                          isSelected ? 'bg-blue-50/70 border-l-4 border-blue-600' : 'hover:bg-slate-50'
                         }`}
                       >
-                        {fpSuppressed
-                          ? 'FP Suppressed'
-                          : fbR.imageTruePositive
-                          ? 'TP'
-                          : fbR.imageTrueNegative
-                          ? 'TN'
-                          : fbR.imageFalsePositive
-                          ? 'FP'
-                          : 'FN'}
-                      </span>
-                    </button>
-                  );
-                })}
+                        <div className="w-12 h-12 rounded-lg bg-slate-900 overflow-hidden shrink-0 border border-slate-200">
+                          {thumbUrl ? (
+                            <img
+                              src={thumbUrl}
+                              alt={sample.title}
+                              className="w-full h-full object-cover"
+                              onError={(e) => {
+                                (e.currentTarget as HTMLElement).style.display = 'none';
+                              }}
+                            />
+                          ) : (
+                            <div className="w-full h-full flex items-center justify-center text-[10px] text-slate-400">
+                              No Img
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center justify-between gap-1">
+                            <span className="text-xs font-semibold text-slate-900 truncate">
+                              #{sampleId}
+                            </span>
+                            <span className={`text-[10px] font-mono font-bold px-1.5 py-0.5 rounded ${statusBadge.bg}`}>
+                              {statusBadge.label}
+                            </span>
+                          </div>
+
+                          <div className="text-[11px] font-medium text-slate-700 truncate mt-0.5">
+                            {sample.detectionClass || sample.title}
+                          </div>
+
+                          <div className="text-[10px] text-slate-500 flex items-center gap-1.5 mt-0.5 truncate">
+                            <span>{sample.locationName || sample.region || 'Road Corridor'}</span>
+                            <span aria-hidden="true">·</span>
+                            <span>{sample.captureTimestamp ? new Date(sample.captureTimestamp).toLocaleDateString() : 'Recorded'}</span>
+                          </div>
+
+                          <div className="mt-1 flex items-center gap-1.5">
+                            <span
+                              className={`text-[9px] font-semibold px-1.5 py-0.2 rounded ${
+                                isPos
+                                  ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                                  : 'bg-amber-50 text-amber-700 border border-amber-200'
+                              }`}
+                            >
+                              {isPos ? 'Confirmed Damage' : `Disputed: ${(sample.negativeCategory || 'Negative').replace('_', ' ')}`}
+                            </span>
+                          </div>
+                        </div>
+                      </button>
+                    );
+                  })
+                )}
               </div>
 
-              {/* Selected Visual Frame & Bounding Box Comparison */}
+              {/* Selected Visual Frame & Bounding Box Comparison (right) */}
               {selectedFbRec && selectedStdRec && selectedEdgeRec && (
                 <div className="lg:col-span-7 p-5 space-y-4">
                   <div className="flex flex-wrap items-center justify-between gap-2">
@@ -944,32 +1041,39 @@ export const EvaluationPage: React.FC = () => {
                         {selectedFbRec.sample.title}
                       </h4>
                       <div className="text-xs text-slate-500 flex items-center gap-2 mt-0.5">
-                        <span>{selectedFbRec.sample.region}</span>
+                        <span>Sample ID: {selectedFbRec.sample.id}</span>
                         <span aria-hidden="true">·</span>
-                        <span>Group: {selectedFbRec.sample.nearDuplicateGroupId}</span>
+                        <span>{(selectedFbRec.sample as any).locationName || selectedFbRec.sample.region}</span>
                         <span aria-hidden="true">·</span>
-                        <span>Surface: {selectedFbRec.sample.roadSurface}</span>
+                        <span>{(selectedFbRec.sample as any).captureTimestamp ? new Date((selectedFbRec.sample as any).captureTimestamp).toLocaleString() : 'Live'}</span>
                       </div>
                     </div>
                     <div className="flex items-center gap-3 text-[11px] font-mono">
-                      <span className="text-emerald-700 font-semibold">Dashed: Ground Truth</span>
-                      <span className="text-blue-700 font-semibold">Solid: RoadGuard Pred</span>
+                      <span className="text-emerald-700 font-semibold flex items-center gap-1">
+                        <span className="inline-block w-3 h-0 border-t-2 border-dashed border-emerald-500"></span>
+                        Green Dashed: Ground Truth
+                      </span>
+                      <span className="text-blue-700 font-semibold flex items-center gap-1">
+                        <span className="inline-block w-3 h-0 border-t-2 border-solid border-blue-500"></span>
+                        Blue Solid: Model Prediction
+                      </span>
                     </div>
                   </div>
 
                   {/* Frame with GT + Predicted Bounding Boxes */}
-                  <div className="relative rounded-xl overflow-hidden border border-slate-200 bg-slate-950 aspect-[4/3] max-h-[280px] mx-auto">
+                  <div className="relative rounded-xl overflow-hidden border border-slate-200 bg-slate-950 aspect-[16/10] max-h-[320px] mx-auto flex items-center justify-center">
                     <img
-                      src={selectedFbRec.imageBase64}
+                      src={(selectedFbRec.sample as any).originalImageUrl || selectedFbRec.imageBase64}
                       alt={selectedFbRec.sample.title}
                       className="w-full h-full object-contain"
                     />
+                    {/* Ground Truth Bounding Boxes (Green Dashed) */}
                     {selectedFbRec.sample.groundTruthBoxes.map((gt, gIdx) => {
                       const [ymin, xmin, ymax, xmax] = gt.box2d;
                       return (
                         <div
                           key={`gt-${gIdx}`}
-                          className="absolute border-2 border-dashed border-emerald-400 pointer-events-none"
+                          className="absolute border-2 border-dashed border-emerald-400 bg-emerald-500/10 pointer-events-none"
                           style={{
                             top: `${ymin / 10}%`,
                             left: `${xmin / 10}%`,
@@ -977,12 +1081,14 @@ export const EvaluationPage: React.FC = () => {
                             height: `${(ymax - ymin) / 10}%`,
                           }}
                         >
-                          <span className="absolute -top-4 left-0 bg-emerald-500 text-slate-950 text-[9px] font-mono font-bold px-1">
+                          <span className="absolute -top-4 left-0 bg-emerald-600 text-white text-[9px] font-mono font-bold px-1.5 py-0.5 rounded-sm whitespace-nowrap">
                             GT {gt.damageClass} ({gt.severity})
                           </span>
                         </div>
                       );
                     })}
+
+                    {/* Model Predictions Bounding Boxes (Blue Solid) */}
                     {selectedFbRec.predictedObjects.map((pred, pIdx) => {
                       if (!pred.box2d) return null;
                       const [ymin, xmin, ymax, xmax] = pred.box2d;
@@ -997,49 +1103,202 @@ export const EvaluationPage: React.FC = () => {
                             height: `${(ymax - ymin) / 10}%`,
                           }}
                         >
-                          <span className="absolute -bottom-4 left-0 bg-blue-600 text-white text-[9px] font-mono font-bold px-1">
-                            Pred {Math.round(pred.confidence * 100)}%
+                          <span className="absolute -bottom-4 left-0 bg-blue-600 text-white text-[9px] font-mono font-bold px-1.5 py-0.5 rounded-sm whitespace-nowrap">
+                            Pred {pred.type} {Math.round(pred.confidence * 100)}%
                           </span>
                         </div>
                       );
                     })}
                   </div>
 
-                  {/* Per-Candidate Prediction Comparison */}
+                  {/* Telemetry Strip: GT vs Pred Overlap Details */}
+                  <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 grid grid-cols-2 sm:grid-cols-5 gap-2 text-xs">
+                    <div>
+                      <span className="text-[10px] text-slate-500 block uppercase font-semibold">Ground-Truth Class</span>
+                      <span className="font-mono font-bold text-slate-900">
+                        {selectedFbRec.sample.groundTruthBoxes[0]?.damageClass ||
+                          (selectedFbRec.sample.isPositive ? 'Verified Damage' : 'None (Negative)')}
+                      </span>
+                    </div>
+
+                    <div>
+                      <span className="text-[10px] text-slate-500 block uppercase font-semibold">Predicted Class</span>
+                      <span className="font-mono font-bold text-slate-900">
+                        {selectedFbRec.predictedObjects[0]?.type || 'None (Clean)'}
+                      </span>
+                    </div>
+
+                    <div>
+                      <span className="text-[10px] text-slate-500 block uppercase font-semibold">Confidence Score</span>
+                      <span className="font-mono font-bold text-slate-900">
+                        {selectedFbRec.predictedObjects[0]
+                          ? `${(selectedFbRec.predictedObjects[0].confidence * 100).toFixed(1)}%`
+                          : 'N/A'}
+                      </span>
+                    </div>
+
+                    <div>
+                      <span className="text-[10px] text-slate-500 block uppercase font-semibold">IoU Overlap</span>
+                      <span className="font-mono font-bold text-slate-900">
+                        {(selectedFbRec.maxIoU * 100).toFixed(1)}%
+                      </span>
+                    </div>
+
+                    <div>
+                      <span className="text-[10px] text-slate-500 block uppercase font-semibold">Matching Status</span>
+                      <span
+                        className={`font-semibold ${
+                          selectedFbRec.sample.isPositive
+                            ? selectedFbRec.maxIoU >= 0.5
+                              ? 'text-emerald-700'
+                              : selectedFbRec.maxIoU >= 0.3
+                              ? 'text-amber-700'
+                              : 'text-rose-700'
+                            : selectedFbRec.predictedObjects.length === 0
+                            ? 'text-emerald-700'
+                            : 'text-rose-700'
+                        }`}
+                      >
+                        {selectedFbRec.sample.isPositive
+                          ? selectedFbRec.maxIoU >= 0.5
+                            ? 'Matched (IoU>=0.5)'
+                            : selectedFbRec.maxIoU >= 0.3
+                            ? 'Partial (IoU>=0.3)'
+                            : 'Missed Detection'
+                          : selectedFbRec.predictedObjects.length === 0
+                          ? 'Clean Rejection (TN)'
+                          : 'False Alarm (FP)'}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Per-Candidate Model Comparison Cards (3 cards) */}
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
-                    <div className="p-3 rounded-xl border border-slate-200 bg-slate-50 space-y-1">
-                      <div className="font-semibold text-slate-800">Edge Baseline</div>
-                      <div className="font-mono text-[11px] text-slate-600">
-                        Detections: {selectedEdgeRec.predictedObjects.length} ·{' '}
-                        {selectedEdgeRec.latencyMs}ms
+                    {/* YOLOv5 Card */}
+                    <div className="p-3 rounded-xl border border-slate-200 bg-slate-50 space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <span className="font-semibold text-slate-900">YOLOv5 Specialized</span>
+                        <span
+                          className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-bold ${
+                            selectedEdgeRec.imageTruePositive
+                              ? 'bg-emerald-100 text-emerald-800'
+                              : selectedEdgeRec.imageTrueNegative
+                              ? 'bg-slate-200 text-slate-700'
+                              : selectedEdgeRec.imageFalsePositive
+                              ? 'bg-rose-100 text-rose-800'
+                              : 'bg-orange-100 text-orange-800'
+                          }`}
+                        >
+                          {selectedEdgeRec.imageTruePositive
+                            ? 'TP'
+                            : selectedEdgeRec.imageTrueNegative
+                            ? 'TN'
+                            : selectedEdgeRec.imageFalsePositive
+                            ? 'FP'
+                            : 'FN'}
+                        </span>
                       </div>
-                      <div className="text-[11px] text-slate-500">
-                        {selectedEdgeRec.predictedObjects[0]?.description || 'No hazard flagged'}
+                      <div className="font-mono text-[11px] text-slate-600">
+                        Detections: {selectedEdgeRec.predictedObjects.length} · {selectedEdgeRec.latencyMs}ms
+                      </div>
+                      <div className="text-[11px] text-slate-600 line-clamp-2">
+                        {selectedEdgeRec.predictedObjects[0]?.description || 'No road damage detected'}
+                      </div>
+                      <div className="text-[10px] text-slate-500 italic pt-1 border-t border-slate-200">
+                        {selectedEdgeRec.imageFalsePositive
+                          ? 'False Positive: Confused non-hazard with road damage.'
+                          : selectedEdgeRec.imageFalseNegative
+                          ? 'False Negative: Missed ground-truth damage.'
+                          : selectedEdgeRec.imageTruePositive
+                          ? 'True Positive: Localized road damage.'
+                          : 'True Negative: Correctly rejected non-damage.'}
                       </div>
                     </div>
 
-                    <div className="p-3 rounded-xl border border-slate-200 bg-slate-50 space-y-1">
-                      <div className="font-semibold text-slate-800">Standard Gemini</div>
-                      <div className="font-mono text-[11px] text-slate-600">
-                        Detections: {selectedStdRec.predictedObjects.length} ·{' '}
-                        {selectedStdRec.latencyMs}ms
+                    {/* Standard Gemini Card */}
+                    <div className="p-3 rounded-xl border border-slate-200 bg-slate-50 space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <span className="font-semibold text-slate-900">Standard Gemini</span>
+                        <span
+                          className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-bold ${
+                            selectedStdRec.imageTruePositive
+                              ? 'bg-emerald-100 text-emerald-800'
+                              : selectedStdRec.imageTrueNegative
+                              ? 'bg-slate-200 text-slate-700'
+                              : selectedStdRec.imageFalsePositive
+                              ? 'bg-rose-100 text-rose-800'
+                              : 'bg-orange-100 text-orange-800'
+                          }`}
+                        >
+                          {selectedStdRec.imageTruePositive
+                            ? 'TP'
+                            : selectedStdRec.imageTrueNegative
+                            ? 'TN'
+                            : selectedStdRec.imageFalsePositive
+                            ? 'FP'
+                            : 'FN'}
+                        </span>
                       </div>
-                      <div className="text-[11px] text-slate-500">
+                      <div className="font-mono text-[11px] text-slate-600">
+                        Detections: {selectedStdRec.predictedObjects.length} · {selectedStdRec.latencyMs}ms
+                      </div>
+                      <div className="text-[11px] text-slate-600 line-clamp-2">
                         {selectedStdRec.predictedObjects[0]?.description || 'No hazard flagged'}
                       </div>
+                      <div className="text-[10px] text-slate-500 italic pt-1 border-t border-slate-200">
+                        {selectedStdRec.imageFalsePositive
+                          ? `False Positive: Zero-feedback prompt confused ${(selectedStdRec.sample.negativeCategory || 'road feature').replace('_', ' ')}.`
+                          : selectedStdRec.imageFalseNegative
+                          ? 'False Negative: Vision prompt did not identify hazard.'
+                          : selectedStdRec.imageTruePositive
+                          ? 'True Positive: Correctly identified damage.'
+                          : 'True Negative: Clean negative rejection.'}
+                      </div>
                     </div>
 
-                    <div className="p-3 rounded-xl border border-slate-200 bg-emerald-50/40 space-y-1">
-                      <div className="font-semibold text-slate-900">RoadGuard Feedback</div>
-                      <div className="font-mono text-[11px] text-slate-700">
-                        Detections: {selectedFbRec.predictedObjects.length} · Suppressed:{' '}
-                        {selectedFbRec.suppressedCount}
+                    {/* RoadGuard Verified Feedback Card */}
+                    <div className="p-3 rounded-xl border border-emerald-200 bg-emerald-50/40 space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <span className="font-semibold text-slate-900">RoadGuard Feedback</span>
+                        <span
+                          className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-bold ${
+                            selectedFbRec.imageTruePositive
+                              ? 'bg-emerald-100 text-emerald-800'
+                              : selectedFbRec.imageTrueNegative
+                              ? 'bg-slate-200 text-slate-700'
+                              : selectedFbRec.imageFalsePositive
+                              ? 'bg-rose-100 text-rose-800'
+                              : 'bg-orange-100 text-orange-800'
+                          }`}
+                        >
+                          {selectedFbRec.imageTruePositive
+                            ? 'TP'
+                            : selectedFbRec.imageTrueNegative
+                            ? 'TN'
+                            : selectedFbRec.imageFalsePositive
+                            ? 'FP'
+                            : 'FN'}
+                        </span>
                       </div>
-                      <div className="text-[11px] text-slate-600">
+                      <div className="font-mono text-[11px] text-slate-700">
+                        Detections: {selectedFbRec.predictedObjects.length} · Suppressed: {selectedFbRec.suppressedCount}
+                      </div>
+                      <div className="text-[11px] text-slate-600 line-clamp-2">
                         {selectedFbRec.predictedObjects[0]?.description ||
                           (selectedFbRec.suppressedCount > 0
-                            ? 'False positive suppressed by verified rule gate'
+                            ? 'False alarm suppressed by verified calibration rule gate'
                             : 'Clean negative rejection')}
+                      </div>
+                      <div className="text-[10px] text-emerald-800 italic pt-1 border-t border-emerald-200">
+                        {selectedFbRec.suppressedCount > 0
+                          ? `False Alarm Prevented: Suppressed ${(selectedFbRec.sample.negativeCategory || 'negative').replace('_', ' ')} via verified rule.`
+                          : selectedFbRec.imageTruePositive
+                          ? 'True Positive: Road damage verified & localized.'
+                          : selectedFbRec.imageTrueNegative
+                          ? 'True Negative: Clean negative rejection.'
+                          : selectedFbRec.imageFalsePositive
+                          ? 'False Positive: Residual false alarm.'
+                          : 'False Negative: Below confidence threshold.'}
                       </div>
                     </div>
                   </div>

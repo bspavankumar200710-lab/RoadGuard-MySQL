@@ -685,7 +685,12 @@ app.get('/api/detections', async (_req, res) => {
       box2d:
         typeof row.box2d === 'string'
           ? JSON.parse(row.box2d)
-          : row.box2d
+          : row.box2d,
+
+      groundTruthBoxes:
+        typeof row.groundTruthBoxes === 'string'
+          ? JSON.parse(row.groundTruthBoxes)
+          : row.groundTruthBoxes
     }));
 
     return res.json(records);

@@ -36,6 +36,13 @@ export type AIEngineType =
   | 'gemini-vision';
 export type DamageClassCode = 'D00' | 'D10' | 'D20' | 'D40' | 'VEHICLE_SPEED' | 'BROKEN_SIGN' | 'OTHER';
 
+export interface GroundTruthBox {
+  type: HazardType;
+  damageClass: string;
+  severity: SeverityLevel;
+  box2d: [number, number, number, number]; // [ymin, xmin, ymax, xmax] 0-1000
+}
+
 export interface RoadHazardRecord {
   id: string;
   reportId?: string; // Report identifier in road-reports/{userId}/{reportId}
@@ -57,6 +64,7 @@ export interface RoadHazardRecord {
   feedbackRuleVersion?: string; // Version of verified feedback rule applied (e.g. v2.0-verified)
   verificationStatus?: VerificationStatusType; // 'pending' | 'verified' | 'rejected'
   box2d?: [number, number, number, number];
+  groundTruthBoxes?: GroundTruthBox[];
   // Vehicle / Scooter speed estimation
   vehicleType?: VehicleType;
   estimatedSpeedKmh?: number;

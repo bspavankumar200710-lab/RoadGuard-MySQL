@@ -110,6 +110,18 @@ class DetectionResponse(BaseModel):
     modelUsed: str
 
 def decode_image_from_base64(b64_str: str) -> np.ndarray:
+    if b64_str.startswith("http://") or b64_str.startswith("https://"):
+        try:
+            import urllib.request
+            req = urllib.request.Request(b64_str, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req, timeout=8) as response:
+                img_bytes = response.read()
+                nparr = np.frombuffer(img_bytes, np.uint8)
+                img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                if img is not None:
+                    return img
+        except Exception as e:
+            print(f"[YOLOv5 Service] Failed to load image from URL: {e}")
     if "base64," in b64_str:
         b64_str = b64_str.split("base64,")[1]
     img_bytes = base64.b64decode(b64_str)
