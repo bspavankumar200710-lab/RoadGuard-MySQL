@@ -8,7 +8,17 @@ import {
 import {
   CALIBRATION_CORRECTIONS,
   CALIBRATION_CONFIDENCE_THRESHOLD_TAU,
+  VerifiedFeedbackRule,
+  compileVerifiedRules,
 } from '../services/feedbackEngine';
+import {
+  SingleRuleEvaluationResult,
+  ImageFeedbackRuleEvaluationReport,
+  getActiveFiveVerifiedRules,
+  evaluateImageAgainstFiveRules,
+  saveFeedbackRuleEvaluation,
+  getEvaluationsForImage,
+} from '../services/feedbackRuleEvaluationService';
 import { detectionService } from '../services/detectionService';
 import { RoadHazardRecord, AILearningStats } from '../types/detection';
 import {
@@ -47,6 +57,14 @@ import {
   Video,
   Camera,
   Upload,
+  CheckCircle,
+  XCircle,
+  HelpCircle,
+  History,
+  ChevronDown,
+  ChevronUp,
+  Info,
+  MapPin,
 } from 'lucide-react';
 
 type EvalSectionTab = 'live-history' | 'baselines' | 'mechanism' | 'dataset' | 'deployment';
@@ -100,6 +118,122 @@ export const EvaluationPage: React.FC = () => {
 
   // Interactive Operational Threshold Slider State (tau = 0.25 .. 0.85)
   const [interactiveTau, setInteractiveTau] = useState<number>(0.55);
+
+  // Feedback Gating Rules - Live Field History Selection & Evaluation State
+  const [activeFiveRules, setActiveFiveRules] = useState<VerifiedFeedbackRule[]>([]);
+  const [selectedHistoryImageId, setSelectedHistoryImageId] = useState<string | null>(null);
+  const [historySearchTerm, setHistorySearchTerm] = useState<string>('');
+  const [historySourceFilter, setHistorySourceFilter] = useState<'all' | 'live_camera' | 'manual_upload'>('all');
+  const [currentRuleEvaluation, setCurrentRuleEvaluation] = useState<ImageFeedbackRuleEvaluationReport | null>(null);
+  const [pastEvaluationsForImage, setPastEvaluationsForImage] = useState<ImageFeedbackRuleEvaluationReport[]>([]);
+  const [isEvaluatingRules, setIsEvaluatingRules] = useState<boolean>(false);
+  const [ruleEvaluationMsg, setRuleEvaluationMsg] = useState<{ type: 'success' | 'info' | 'error'; text: string } | null>(null);
+  const [showPastEvaluationsList, setShowPastEvaluationsList] = useState<boolean>(false);
+
+  // Load active 5 canonical verified rules from MySQL / compiled engine on mount
+  useEffect(() => {
+    getActiveFiveVerifiedRules().then((rules) => {
+      setActiveFiveRules(rules);
+    });
+  }, []);
+
+  // When liveDetections first loads or updates, if no selected image, default to the first one
+  useEffect(() => {
+    if (!selectedHistoryImageId && liveDetections.length > 0) {
+      setSelectedHistoryImageId(liveDetections[0].id);
+    }
+  }, [liveDetections, selectedHistoryImageId]);
+
+  // When selectedHistoryImageId changes: check MySQL for previous evaluations or evaluate
+  useEffect(() => {
+    if (!selectedHistoryImageId) {
+      setCurrentRuleEvaluation(null);
+      setPastEvaluationsForImage([]);
+      return;
+    }
+
+    let isMounted = true;
+    getEvaluationsForImage(selectedHistoryImageId).then(async (pastEvals) => {
+      if (!isMounted) return;
+      setPastEvaluationsForImage(pastEvals);
+
+      if (pastEvals.length > 0) {
+        // Reopen existing evaluation without re-evaluating
+        setCurrentRuleEvaluation(pastEvals[0]);
+        setRuleEvaluationMsg({
+          type: 'info',
+          text: `Loaded existing evaluation from MySQL (${pastEvals.length} historical run${pastEvals.length > 1 ? 's' : ''} on record).`,
+        });
+      } else {
+        // No evaluation yet for this image - automatically run initial evaluation
+        const targetRecord = liveDetections.find((r) => r.id === selectedHistoryImageId);
+        if (targetRecord) {
+          setIsEvaluatingRules(true);
+          try {
+            const rules = activeFiveRules.length >= 5 ? activeFiveRules : await getActiveFiveVerifiedRules();
+            const rep = await evaluateImageAgainstFiveRules(targetRecord, rules);
+            if (!isMounted) return;
+            await saveFeedbackRuleEvaluation(rep);
+            setCurrentRuleEvaluation(rep);
+            setPastEvaluationsForImage([rep]);
+            setRuleEvaluationMsg({
+              type: 'success',
+              text: `Evaluated against 5 compiled rules and saved to MySQL (ID: ${rep.id}).`,
+            });
+          } catch (err: any) {
+            console.error('[FeedbackRules] Evaluation error:', err);
+            if (isMounted) {
+              setRuleEvaluationMsg({
+                type: 'error',
+                text: 'Failed to complete rule evaluation for selected image.',
+              });
+            }
+          } finally {
+            if (isMounted) setIsEvaluatingRules(false);
+          }
+        }
+      }
+    });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [selectedHistoryImageId, activeFiveRules, liveDetections]);
+
+  // Handler to explicitly (re-)evaluate the selected image and append a new run to MySQL
+  const handleEvaluateSelectedImage = async () => {
+    if (!selectedHistoryImageId) return;
+    const targetRecord = liveDetections.find((r) => r.id === selectedHistoryImageId);
+    if (!targetRecord) return;
+
+    setIsEvaluatingRules(true);
+    setRuleEvaluationMsg(null);
+    try {
+      const rules = activeFiveRules.length >= 5 ? activeFiveRules : await getActiveFiveVerifiedRules();
+      const newReport = await evaluateImageAgainstFiveRules(targetRecord, rules);
+      const savedOk = await saveFeedbackRuleEvaluation(newReport);
+      setCurrentRuleEvaluation(newReport);
+
+      // Refresh past evaluations list from MySQL
+      const updatedPast = await getEvaluationsForImage(selectedHistoryImageId);
+      setPastEvaluationsForImage(updatedPast);
+
+      setRuleEvaluationMsg({
+        type: 'success',
+        text: savedOk
+          ? `Rule evaluation complete. Persisted to MySQL (ID: ${newReport.id}) without overwriting prior runs.`
+          : `Rule evaluation complete (ID: ${newReport.id}).`,
+      });
+    } catch (err: any) {
+      console.error('[FeedbackRules] Evaluation error:', err);
+      setRuleEvaluationMsg({
+        type: 'error',
+        text: 'Error evaluating image against feedback rules: ' + (err?.message || 'Unknown error'),
+      });
+    } finally {
+      setIsEvaluatingRules(false);
+    }
+  };
 
   const executeBenchmark = useCallback(
     async (liveApiOverride?: boolean, recordsOverride?: RoadHazardRecord[]) => {
@@ -1401,145 +1535,779 @@ export const EvaluationPage: React.FC = () => {
         </div>
       )}
 
-      {/* TAB 2: FORMAL FEEDBACK MECHANISM */}
-      {activeTab === 'mechanism' && report && (
-        <div className="space-y-6">
-          <div className="bg-white border border-slate-200 rounded-2xl p-5 sm:p-6 space-y-4">
-            <div>
-              <h3 className="text-base font-bold text-slate-900">
-                5-Stage Verified Feedback-to-Rule Pipeline vs. Manual Prompt Refinement
-              </h3>
-              <p className="text-xs text-slate-600 mt-1 leading-relaxed">
-                RoadGuard does not rely on ad-hoc hand-editing of system prompts. Driver corrections
-                pass through a deterministic compilation and split-isolation pipeline with exact
-                hashing and post-inference confidence gating.
-              </p>
-            </div>
+      {/* TAB 2: FORMAL FEEDBACK MECHANISM & LIVE FIELD EVALUATION */}
+      {activeTab === 'mechanism' && (() => {
+        const rulesToDisplay = (report?.compiledRules && report.compiledRules.length >= 5)
+          ? report.compiledRules
+          : (activeFiveRules.length >= 5 ? activeFiveRules : compileVerifiedRules(CALIBRATION_CORRECTIONS));
+        const ruleVersionToDisplay = report?.ruleSetVersion || activeFiveRules[0]?.ruleSetVersion || 'v2.0-verified-calibration';
 
-            <div className="grid grid-cols-1 md:grid-cols-5 gap-3 text-xs">
-              {[
-                {
-                  step: '01. Collection',
-                  detail:
-                    'Driver disputes prediction with structured negative class (manhole, shadow, puddle, paint, speed breaker) and bounding box.',
-                },
-                {
-                  step: '02. Verification Gate',
-                  detail:
-                    'Correction remains pending until reviewer quorum verifies true-negative label; held-out test records are strictly blocked.',
-                },
-                {
-                  step: '03. Rule Compilation',
-                  detail:
-                    'Canonical taxonomy compiles deterministic rule ID, FNV-1a hash, trigger cues, and penalty delta (no free-form prompt rewriting).',
-                },
-                {
-                  step: '04. Versioned Storage',
-                  detail:
-                    'Compiled rule set is versioned (v2.0-verified-calibration) and persisted with source correction provenance IDs.',
-                },
-                {
-                  step: '05. Dual Application',
-                  detail:
-                    'Schema constraints guide temperature=0 inference; post-inference gate applies c_cal = max(0, c_raw - penalty) < tau (0.55).',
-                },
-              ].map((item) => (
-                <div
-                  key={item.step}
-                  className="p-3.5 rounded-xl border border-slate-200 bg-slate-50 space-y-1.5"
-                >
-                  <div className="font-bold text-slate-900">{item.step}</div>
-                  <p className="text-[11px] text-slate-600 leading-relaxed">{item.detail}</p>
-                </div>
-              ))}
-            </div>
-          </div>
+        // Filter historical images by search query and source filter
+        const filteredHistoryImages = liveDetections.filter((record) => {
+          if (historySourceFilter === 'live_camera' && record.imageSource !== 'live_camera') return false;
+          if (historySourceFilter === 'manual_upload' && record.imageSource !== 'manual_upload' && record.imageSource !== 'video_upload') return false;
 
-          {/* Exact Compiled Rules Table */}
-          <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
-            <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between">
-              <div>
-                <h3 className="text-sm font-bold text-slate-900">
-                  Compiled Verified Feedback Rules ({report.compiledRules.length} Active)
-                </h3>
-                <p className="text-xs text-slate-500 mt-0.5">
-                  Reproducible rule definitions compiled exclusively from verified calibration-split
-                  corrections (tau = {CALIBRATION_CONFIDENCE_THRESHOLD_TAU}).
-                </p>
-              </div>
-              <span className="text-xs font-mono text-slate-500">{report.ruleSetVersion}</span>
-            </div>
+          if (historySearchTerm.trim()) {
+            const term = historySearchTerm.toLowerCase();
+            const idMatch = (record.id || '').toLowerCase().includes(term);
+            const locMatch = (record.locationName || '').toLowerCase().includes(term);
+            const typeMatch = (record.type || '').toLowerCase().includes(term);
+            const damageMatch = (record.damageName || record.damageClass || '').toLowerCase().includes(term);
+            const dateMatch = (record.timestamp || '').toLowerCase().includes(term);
+            const disputeMatch = (record.disputeReason || '').toLowerCase().includes(term);
+            if (!idMatch && !locMatch && !typeMatch && !damageMatch && !dateMatch && !disputeMatch) {
+              return false;
+            }
+          }
+          return true;
+        });
 
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse text-xs">
-                <thead>
-                  <tr className="border-b border-slate-200 bg-slate-50 text-slate-600">
-                    <th className="py-2.5 px-4 font-semibold">Rule ID / Hash</th>
-                    <th className="py-2.5 px-3 font-semibold">Negative Class</th>
-                    <th className="py-2.5 px-3 font-semibold">Source Corrections</th>
-                    <th className="py-2.5 px-3 font-semibold text-right">Penalty</th>
-                    <th className="py-2.5 px-4 font-semibold">Compiled Constraint Clause</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {report.compiledRules.map((rule) => (
-                    <tr key={rule.ruleId} className="hover:bg-slate-50">
-                      <td className="py-3 px-4 font-mono text-[11px] text-slate-900 whitespace-nowrap">
-                        <div className="font-bold">{rule.ruleId}</div>
-                        <div className="text-slate-500">#{rule.ruleHash}</div>
-                      </td>
-                      <td className="py-3 px-3 font-medium text-slate-800 capitalize whitespace-nowrap">
-                        {rule.trueNegativeClass.replace('_', ' ')}
-                      </td>
-                      <td className="py-3 px-3 font-mono text-[11px] text-slate-600">
-                        {rule.sourceCorrectionIds.join(', ')}
-                      </td>
-                      <td className="py-3 px-3 font-mono tabular-nums text-right font-semibold text-rose-700">
-                        -{rule.confidencePenalty.toFixed(2)}
-                      </td>
-                      <td className="py-3 px-4 text-slate-600 leading-relaxed">
-                        {rule.canonicalConstraint}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
+        const selectedRecord = liveDetections.find((r) => r.id === selectedHistoryImageId) || filteredHistoryImages[0] || liveDetections[0];
+        const totalLiveCameraImages = liveDetections.filter((r) => r.imageSource === 'live_camera').length;
+        const totalUploadedImages = liveDetections.filter((r) => r.imageSource === 'manual_upload' || r.imageSource === 'video_upload').length;
 
-          {/* Calibration Submissions Log (including pending_verification exclusion) */}
-          <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
-            <div className="px-5 py-4 border-b border-slate-200">
-              <h3 className="text-sm font-bold text-slate-900">
-                Calibration-Split Correction Audit Log
-              </h3>
-              <p className="text-xs text-slate-500 mt-0.5">
-                Notice corr-cal-006 remains pending_verification and is excluded from rule
-                compilation until reviewer sign-off.
-              </p>
-            </div>
-            <div className="divide-y divide-slate-100 text-xs">
-              {CALIBRATION_CORRECTIONS.map((c) => (
-                <div key={c.id} className="px-5 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                  <div>
-                    <div className="font-mono font-semibold text-slate-900">
-                      {c.id} · {c.region} · {c.predictedType} → {c.trueNegativeClass}
+        return (
+          <div className="space-y-6">
+            {/* 1. LIVE FIELD HISTORY IMAGE SELECTION & RULE EVALUATION */}
+            <div className="bg-white border border-slate-200 rounded-2xl p-5 sm:p-6 space-y-6 shadow-sm">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-4">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <div className="w-8 h-8 rounded-lg bg-indigo-50 text-indigo-600 flex items-center justify-center font-bold">
+                      <Brain className="w-4 h-4" />
                     </div>
-                    <div className="text-slate-600 mt-0.5">{c.operatorNote}</div>
+                    <div>
+                      <h3 className="text-base font-bold text-slate-900">
+                        Feedback Gating Rules Evaluation (Live Field History)
+                      </h3>
+                      <p className="text-xs text-slate-500 mt-0.5">
+                        Select any captured or uploaded road image from Live Field History to test against the 5 canonical compiled verified feedback rules.
+                      </p>
+                    </div>
                   </div>
-                  <span
-                    className={`font-mono text-[11px] font-semibold shrink-0 ${
-                      c.verificationStatus === 'verified' ? 'text-emerald-700' : 'text-amber-700'
-                    }`}
-                  >
-                    {c.verificationStatus}
+                </div>
+                <div className="flex items-center gap-2 self-start sm:self-auto">
+                  <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-indigo-50 text-indigo-700 border border-indigo-200">
+                    <ShieldCheck className="w-3.5 h-3.5 text-indigo-600" />
+                    {rulesToDisplay.length} Active Rules ({ruleVersionToDisplay})
+                  </span>
+                  <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                    <Database className="w-3.5 h-3.5 text-emerald-600" />
+                    MySQL roadguard_db
                   </span>
                 </div>
-              ))}
+              </div>
+
+              {/* Filters & Dropdown Selector */}
+              <div className="space-y-3 bg-slate-50 border border-slate-200/80 rounded-xl p-4">
+                <div className="flex flex-col sm:flex-row gap-2.5 items-stretch sm:items-center justify-between">
+                  {/* Search Input */}
+                  <div className="relative flex-1">
+                    <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="text"
+                      placeholder="Search history by Image ID, location, damage type, date, or dispute reason..."
+                      value={historySearchTerm}
+                      onChange={(e) => setHistorySearchTerm(e.target.value)}
+                      className="w-full pl-9 pr-3 py-2 text-xs bg-white border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition placeholder:text-slate-400"
+                    />
+                    {historySearchTerm && (
+                      <button
+                        onClick={() => setHistorySearchTerm('')}
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Source Tabs */}
+                  <div className="flex items-center gap-1 bg-white border border-slate-200 p-0.5 rounded-lg shrink-0">
+                    {[
+                      { id: 'all', label: `All (${liveDetections.length})` },
+                      { id: 'live_camera', label: `Live Camera (${totalLiveCameraImages})` },
+                      { id: 'manual_upload', label: `Uploaded (${totalUploadedImages})` },
+                    ].map((tab) => (
+                      <button
+                        key={tab.id}
+                        onClick={() => setHistorySourceFilter(tab.id as any)}
+                        className={`px-2.5 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                          historySourceFilter === tab.id
+                            ? 'bg-indigo-600 text-white shadow-sm'
+                            : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50'
+                        }`}
+                      >
+                        {tab.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Dropdown Select from Live Field History */}
+                <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                  <label htmlFor="history-image-select" className="text-xs font-semibold text-slate-700 shrink-0 flex items-center gap-1.5">
+                    <Eye className="w-3.5 h-3.5 text-slate-500" />
+                    Select Image from Live Field History:
+                  </label>
+                  <select
+                    id="history-image-select"
+                    value={selectedRecord ? selectedRecord.id : ''}
+                    onChange={(e) => setSelectedHistoryImageId(e.target.value)}
+                    className="flex-1 px-3 py-2 text-xs bg-white border border-slate-200 rounded-lg font-mono text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 cursor-pointer"
+                  >
+                    {filteredHistoryImages.length === 0 ? (
+                      <option value="">No historical images match your search or filter</option>
+                    ) : (
+                      filteredHistoryImages.map((record) => {
+                        const isUpload = record.imageSource === 'manual_upload' || record.imageSource === 'video_upload';
+                        const sourceTag = isUpload ? '📁 Upload' : '📷 Camera';
+                        const dateStr = record.timestamp ? new Date(record.timestamp).toLocaleDateString() : '';
+                        const hazardName = record.damageName || record.type || 'Pothole';
+                        const confPct = Math.round((record.confidence || 0) * 100);
+                        const isVerified = record.verifiedStatus === 'confirmed' || record.verificationStatus === 'verified';
+                        const isDisputed = record.verifiedStatus === 'disputed' || record.verificationStatus === 'rejected';
+                        const statusTag = isVerified ? '✓ Verified Damage' : (isDisputed ? '✕ Disputed Negative' : 'Pending');
+                        return (
+                          <option key={record.id} value={record.id}>
+                            [{sourceTag}] {record.id} · {record.locationName || 'Unknown Location'} ({hazardName} {confPct}%) · {dateStr} · {statusTag}
+                          </option>
+                        );
+                      })
+                    )}
+                  </select>
+                </div>
+              </div>
+
+              {/* Selected Image Detail & Evaluation Action Card */}
+              {selectedRecord ? (
+                <div className="border border-slate-200 rounded-xl overflow-hidden bg-white shadow-sm">
+                  <div className="grid grid-cols-1 md:grid-cols-12 gap-0 divide-y md:divide-y-0 md:divide-x divide-slate-200">
+                    {/* Left: Image Thumbnail & Preview Action */}
+                    <div className="md:col-span-5 p-4 bg-slate-900 flex flex-col justify-between relative group">
+                      <div className="relative aspect-video w-full rounded-lg overflow-hidden bg-slate-950 flex items-center justify-center">
+                        {selectedRecord.imageUrl ? (
+                          <img
+                            src={selectedRecord.imageUrl}
+                            alt={selectedRecord.id}
+                            className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
+                          />
+                        ) : (
+                          <div className="text-center text-slate-500 p-4">
+                            <Camera className="w-8 h-8 mx-auto mb-2 opacity-50" />
+                            <span className="text-xs">No image preview data</span>
+                          </div>
+                        )}
+
+                        {/* Source Tag Badge */}
+                        <div className="absolute top-2 left-2 flex items-center gap-1.5">
+                          {selectedRecord.imageSource === 'live_camera' ? (
+                            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-blue-600/90 text-white backdrop-blur shadow-sm flex items-center gap-1">
+                              <Camera className="w-3 h-3" /> Live Camera
+                            </span>
+                          ) : (
+                            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-purple-600/90 text-white backdrop-blur shadow-sm flex items-center gap-1">
+                              <Upload className="w-3 h-3" /> Manual Upload
+                            </span>
+                          )}
+                        </div>
+
+                        {/* Enlarge Button */}
+                        {selectedRecord.imageUrl && (
+                          <button
+                            onClick={() => setPreviewImage(selectedRecord.imageUrl || null)}
+                            className="absolute bottom-2 right-2 px-2.5 py-1 rounded bg-black/70 hover:bg-black/90 text-white text-[11px] font-medium backdrop-blur flex items-center gap-1 transition shadow-sm"
+                            title="Open full size photograph"
+                          >
+                            <Eye className="w-3.5 h-3.5" /> Full Size
+                          </button>
+                        )}
+                      </div>
+
+                      <div className="mt-3 flex items-center justify-between text-slate-400 text-[11px]">
+                        <span className="truncate max-w-[200px]" title={selectedRecord.locationName || 'Road Sector'}>
+                          📍 {selectedRecord.locationName || 'Road Sector'}
+                        </span>
+                        <span className="shrink-0 font-mono">
+                          {selectedRecord.timestamp ? new Date(selectedRecord.timestamp).toLocaleTimeString() : ''}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Right: Detailed Metadata & Execution */}
+                    <div className="md:col-span-7 p-4 sm:p-5 flex flex-col justify-between space-y-4">
+                      <div>
+                        <div className="flex items-center justify-between gap-2 mb-3">
+                          <div className="flex items-center gap-2">
+                            <span className="font-mono text-xs font-bold text-slate-900 bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
+                              {selectedRecord.id}
+                            </span>
+                            {selectedRecord.verifiedStatus === 'confirmed' || selectedRecord.verificationStatus === 'verified' ? (
+                              <span className="px-2 py-0.5 rounded text-[11px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                                Verified Road Damage
+                              </span>
+                            ) : selectedRecord.verifiedStatus === 'disputed' || selectedRecord.verificationStatus === 'rejected' ? (
+                              <span className="px-2 py-0.5 rounded text-[11px] font-bold bg-rose-100 text-rose-800 border border-rose-200">
+                                Disputed Negative ({selectedRecord.disputeReason || 'Hard Negative'})
+                              </span>
+                            ) : (
+                              <span className="px-2 py-0.5 rounded text-[11px] font-bold bg-amber-100 text-amber-800 border border-amber-200">
+                                Pending Verification
+                              </span>
+                            )}
+                          </div>
+
+                          {/* Evaluation Status in MySQL */}
+                          {pastEvaluationsForImage.length > 0 ? (
+                            <span className="text-[11px] font-semibold text-emerald-700 bg-emerald-50 px-2.5 py-0.5 rounded-full border border-emerald-200 flex items-center gap-1 shrink-0">
+                              <CheckCircle2 className="w-3.5 h-3.5" /> Persisted ({pastEvaluationsForImage.length} run{pastEvaluationsForImage.length > 1 ? 's' : ''})
+                            </span>
+                          ) : (
+                            <span className="text-[11px] font-semibold text-slate-500 bg-slate-100 px-2 py-0.5 rounded border border-slate-200 shrink-0">
+                              New / Awaiting Evaluation
+                            </span>
+                          )}
+                        </div>
+
+                        {/* Metadata Details Grid */}
+                        <div className="grid grid-cols-2 gap-3 text-xs">
+                          <div className="p-2.5 bg-slate-50 rounded-lg border border-slate-100">
+                            <div className="text-[11px] text-slate-500 font-medium flex items-center gap-1">
+                              <Clock className="w-3 h-3" /> Capture Timestamp
+                            </div>
+                            <div className="font-semibold text-slate-800 mt-0.5 truncate">
+                              {selectedRecord.timestamp ? new Date(selectedRecord.timestamp).toLocaleString() : 'N/A'}
+                            </div>
+                          </div>
+
+                          <div className="p-2.5 bg-slate-50 rounded-lg border border-slate-100">
+                            <div className="text-[11px] text-slate-500 font-medium flex items-center gap-1">
+                              <MapPin className="w-3 h-3" /> Geographic Location
+                            </div>
+                            <div className="font-semibold text-slate-800 mt-0.5 truncate" title={selectedRecord.locationName || 'Road Corridor'}>
+                              {selectedRecord.locationName || (selectedRecord.latitude ? `${selectedRecord.latitude.toFixed(4)}, ${selectedRecord.longitude?.toFixed(4)}` : 'Recorded Route Sector')}
+                            </div>
+                          </div>
+
+                          <div className="p-2.5 bg-slate-50 rounded-lg border border-slate-100">
+                            <div className="text-[11px] text-slate-500 font-medium flex items-center gap-1">
+                              <Activity className="w-3 h-3" /> AI Detection Class
+                            </div>
+                            <div className="font-semibold text-slate-800 mt-0.5 flex items-center gap-1.5">
+                              <span className="capitalize">{selectedRecord.damageName || selectedRecord.type || 'Pothole'}</span>
+                              <span className="text-[10px] px-1.5 py-0.2 rounded bg-slate-200 text-slate-700 font-mono">
+                                {selectedRecord.severity || 'medium'}
+                              </span>
+                            </div>
+                          </div>
+
+                          <div className="p-2.5 bg-slate-50 rounded-lg border border-slate-100">
+                            <div className="text-[11px] text-slate-500 font-medium flex items-center gap-1">
+                              <Gauge className="w-3 h-3" /> Detection Confidence
+                            </div>
+                            <div className="font-semibold text-slate-800 mt-0.5 flex items-center gap-2">
+                              <span className="font-mono text-indigo-700">
+                                {((selectedRecord.confidence || 0) * 100).toFixed(1)}%
+                              </span>
+                              <div className="flex-1 bg-slate-200 rounded-full h-1.5 overflow-hidden max-w-[80px]">
+                                <div
+                                  className="bg-indigo-600 h-full rounded-full"
+                                  style={{ width: `${Math.min(100, Math.round((selectedRecord.confidence || 0) * 100))}%` }}
+                                />
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+
+                        {selectedRecord.disputeReason && (
+                          <div className="mt-2.5 p-2 bg-rose-50 border border-rose-200/80 rounded-lg text-xs text-rose-800">
+                            <span className="font-bold">Driver / Feedback Ground Truth:</span> Flagged as non-hazard <span className="font-mono font-bold capitalize">{selectedRecord.disputeReason.replace('_', ' ')}</span> exclusion condition.
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Action Row */}
+                      <div className="pt-2 flex flex-wrap items-center justify-between gap-2 border-t border-slate-100">
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={handleEvaluateSelectedImage}
+                            disabled={isEvaluatingRules}
+                            className={`px-4 py-2 text-xs font-bold rounded-lg text-white transition flex items-center gap-1.5 shadow-sm ${
+                              isEvaluatingRules
+                                ? 'bg-indigo-400 cursor-not-allowed'
+                                : 'bg-indigo-600 hover:bg-indigo-700 active:scale-95'
+                            }`}
+                          >
+                            <RefreshCw className={`w-3.5 h-3.5 ${isEvaluatingRules ? 'animate-spin' : ''}`} />
+                            {isEvaluatingRules
+                              ? 'Evaluating Rules...'
+                              : (pastEvaluationsForImage.length > 0 ? 'Re-Evaluate Rules' : 'Evaluate Rules')}
+                          </button>
+
+                          {pastEvaluationsForImage.length > 1 && (
+                            <button
+                              onClick={() => setShowPastEvaluationsList(!showPastEvaluationsList)}
+                              className="px-3 py-2 text-xs font-semibold rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 transition flex items-center gap-1.5"
+                            >
+                              <History className="w-3.5 h-3.5 text-slate-500" />
+                              Past Runs ({pastEvaluationsForImage.length})
+                              {showPastEvaluationsList ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                            </button>
+                          )}
+                        </div>
+
+                        {currentRuleEvaluation && (
+                          <div className="text-[11px] font-mono text-slate-500">
+                            Run ID: <span className="font-bold text-slate-700">{currentRuleEvaluation.id}</span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Past Evaluation History Drawer */}
+                  {showPastEvaluationsList && pastEvaluationsForImage.length > 0 && (
+                    <div className="p-4 bg-slate-50 border-t border-slate-200 space-y-2">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="font-bold text-slate-800">
+                          Historical Evaluation Records in MySQL ({pastEvaluationsForImage.length} total)
+                        </span>
+                        <span className="text-[11px] text-slate-500">
+                          Reopen prior evaluation without re-evaluating
+                        </span>
+                      </div>
+                      <div className="divide-y divide-slate-200 border border-slate-200 rounded-lg bg-white overflow-hidden text-xs">
+                        {pastEvaluationsForImage.map((past, idx) => (
+                          <div
+                            key={past.id}
+                            className={`p-3 flex items-center justify-between gap-3 hover:bg-slate-50 transition ${
+                              currentRuleEvaluation?.id === past.id ? 'bg-indigo-50/50' : ''
+                            }`}
+                          >
+                            <div className="flex items-center gap-2">
+                              <span className="font-mono text-[11px] font-bold text-slate-700">
+                                #{idx + 1} {past.id}
+                              </span>
+                              <span className="text-slate-400">·</span>
+                              <span className="text-slate-600">
+                                {new Date(past.evaluationTimestamp).toLocaleString()}
+                              </span>
+                              <span className="text-slate-400">·</span>
+                              <span className="text-emerald-700 font-semibold">
+                                {past.satisfiedCount} Satisfied
+                              </span>
+                              <span className="text-slate-400">·</span>
+                              <span className="text-rose-700 font-semibold">
+                                {past.notSatisfiedCount} Not Satisfied
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <span className={`font-mono font-bold ${past.overallScore >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
+                                Score: {past.overallScore > 0 ? '+' : ''}{past.overallScore.toFixed(2)}
+                              </span>
+                              {currentRuleEvaluation?.id === past.id ? (
+                                <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-600 text-white">
+                                  Current View
+                                </span>
+                              ) : (
+                                <button
+                                  onClick={() => {
+                                    setCurrentRuleEvaluation(past);
+                                    setRuleEvaluationMsg({
+                                      type: 'info',
+                                      text: `Viewing historical evaluation run ${past.id}.`,
+                                    });
+                                  }}
+                                  className="px-2.5 py-1 rounded text-xs font-medium bg-slate-100 hover:bg-slate-200 text-slate-800 transition"
+                                >
+                                  Load Run
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Status Banner */}
+                  {ruleEvaluationMsg && (
+                    <div
+                      className={`px-4 py-2.5 text-xs flex items-center justify-between border-t ${
+                        ruleEvaluationMsg.type === 'success'
+                          ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                          : ruleEvaluationMsg.type === 'error'
+                          ? 'bg-rose-50 text-rose-800 border-rose-200'
+                          : 'bg-indigo-50 text-indigo-800 border-indigo-200'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2">
+                        {ruleEvaluationMsg.type === 'success' ? (
+                          <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                        ) : ruleEvaluationMsg.type === 'error' ? (
+                          <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
+                        ) : (
+                          <Info className="w-4 h-4 text-indigo-600 shrink-0" />
+                        )}
+                        <span>{ruleEvaluationMsg.text}</span>
+                      </div>
+                      <button
+                        onClick={() => setRuleEvaluationMsg(null)}
+                        className="text-slate-400 hover:text-slate-600 ml-2"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="p-8 text-center text-slate-500 border border-dashed border-slate-300 rounded-xl">
+                  No historical images found. Capture camera images in Camera Monitor or upload recordings.
+                </div>
+              )}
+
+              {/* 2. SUMMARY STATISTICS CARDS (7 Counters) */}
+              {currentRuleEvaluation && (
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider flex items-center gap-1.5">
+                      <BarChart3 className="w-3.5 h-3.5 text-indigo-600" />
+                      Feedback Rule Evaluation Metrics & Penalty Summary
+                    </h4>
+                    <span className="text-[11px] font-mono text-slate-500">
+                      Evaluated: {new Date(currentRuleEvaluation.evaluationTimestamp).toLocaleTimeString()}
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3 text-xs">
+                    {/* Card 1: Total Rules */}
+                    <div className="p-3 bg-slate-50 rounded-xl border border-slate-200">
+                      <div className="text-[11px] text-slate-500 font-medium">Total Rules</div>
+                      <div className="text-xl font-bold font-mono text-slate-900 mt-1">
+                        {currentRuleEvaluation.totalRules}
+                      </div>
+                      <div className="text-[10px] text-slate-500 mt-0.5">Canonical verified</div>
+                    </div>
+
+                    {/* Card 2: Satisfied Count */}
+                    <div className="p-3 bg-emerald-50/70 rounded-xl border border-emerald-200">
+                      <div className="text-[11px] text-emerald-800 font-medium flex items-center gap-1">
+                        <CheckCircle2 className="w-3 h-3 text-emerald-600" /> Satisfied (+)
+                      </div>
+                      <div className="text-xl font-bold font-mono text-emerald-700 mt-1">
+                        {currentRuleEvaluation.satisfiedCount}
+                      </div>
+                      <div className="text-[10px] text-emerald-600 mt-0.5">Exclusion handled</div>
+                    </div>
+
+                    {/* Card 3: Not Satisfied Count */}
+                    <div className="p-3 bg-rose-50/70 rounded-xl border border-rose-200">
+                      <div className="text-[11px] text-rose-800 font-medium flex items-center gap-1">
+                        <X className="w-3 h-3 text-rose-600" /> Not Satisfied (-)
+                      </div>
+                      <div className="text-xl font-bold font-mono text-rose-700 mt-1">
+                        {currentRuleEvaluation.notSatisfiedCount}
+                      </div>
+                      <div className="text-[10px] text-rose-600 mt-0.5">Condition absent/unmet</div>
+                    </div>
+
+                    {/* Card 4: Inconclusive Count */}
+                    <div className="p-3 bg-slate-50 rounded-xl border border-slate-200">
+                      <div className="text-[11px] text-slate-600 font-medium flex items-center gap-1">
+                        <HelpCircle className="w-3 h-3 text-slate-500" /> Inconclusive (0)
+                      </div>
+                      <div className="text-xl font-bold font-mono text-slate-700 mt-1">
+                        {currentRuleEvaluation.inconclusiveCount}
+                      </div>
+                      <div className="text-[10px] text-slate-500 mt-0.5">Insufficient evidence</div>
+                    </div>
+
+                    {/* Card 5: Total Positive Penalty */}
+                    <div className="p-3 bg-emerald-50/70 rounded-xl border border-emerald-200">
+                      <div className="text-[11px] text-emerald-800 font-medium">Positive Penalty</div>
+                      <div className="text-xl font-bold font-mono text-emerald-700 mt-1">
+                        +{currentRuleEvaluation.totalPositivePenalty.toFixed(2)}
+                      </div>
+                      <div className="text-[10px] text-emerald-600 mt-0.5">Sum of satisfied (+)</div>
+                    </div>
+
+                    {/* Card 6: Total Negative Penalty */}
+                    <div className="p-3 bg-rose-50/70 rounded-xl border border-rose-200">
+                      <div className="text-[11px] text-rose-800 font-medium">Negative Penalty</div>
+                      <div className="text-xl font-bold font-mono text-rose-700 mt-1">
+                        {currentRuleEvaluation.totalNegativePenalty.toFixed(2)}
+                      </div>
+                      <div className="text-[10px] text-rose-600 mt-0.5">Sum of unmet (-)</div>
+                    </div>
+
+                    {/* Card 7: Overall Score */}
+                    <div className={`p-3 rounded-xl border col-span-2 sm:col-span-1 ${
+                      currentRuleEvaluation.overallScore >= 0
+                        ? 'bg-emerald-100/60 border-emerald-300 text-emerald-900'
+                        : 'bg-rose-100/60 border-rose-300 text-rose-900'
+                    }`}>
+                      <div className="text-[11px] font-bold">Overall Score</div>
+                      <div className="text-xl font-extrabold font-mono mt-1">
+                        {currentRuleEvaluation.overallScore > 0 ? '+' : ''}
+                        {currentRuleEvaluation.overallScore.toFixed(2)}
+                      </div>
+                      <div className="text-[10px] opacity-80 mt-0.5">Signed penalty sum</div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* 3. EVALUATION RESULTS TABLE (All 5 Rules Evaluated Independently) */}
+              {currentRuleEvaluation && (
+                <div className="border border-slate-200 rounded-xl overflow-hidden bg-white shadow-sm space-y-0">
+                  <div className="px-5 py-3.5 bg-slate-50 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <div>
+                      <h4 className="text-sm font-bold text-slate-900">
+                        Five Compiled Verified Feedback Rules – Independent Evaluation
+                      </h4>
+                      <p className="text-xs text-slate-500 mt-0.5">
+                        Evaluating image <span className="font-mono font-bold text-slate-800">{currentRuleEvaluation.imageId}</span> against all 5 active gating exclusions.
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono text-xs text-slate-600 bg-white px-2.5 py-1 rounded border border-slate-200">
+                        Version: {currentRuleEvaluation.ruleSetVersion}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left border-collapse text-xs">
+                      <thead>
+                        <tr className="border-b border-slate-200 bg-slate-100/70 text-slate-700">
+                          <th className="py-2.5 px-4 font-semibold w-28">Rule ID</th>
+                          <th className="py-2.5 px-3 font-semibold w-36">Category</th>
+                          <th className="py-2.5 px-3 font-semibold w-36">Result</th>
+                          <th className="py-2.5 px-3 font-semibold w-28 text-right">Penalty</th>
+                          <th className="py-2.5 px-4 font-semibold">Explanation / Evidence</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {currentRuleEvaluation.ruleResults.map((r) => (
+                          <tr key={r.ruleId} className="hover:bg-slate-50/80 transition-colors">
+                            {/* Column 1: Rule ID */}
+                            <td className="py-3.5 px-4 font-mono text-[11px] text-slate-900 whitespace-nowrap">
+                              <div className="font-bold text-indigo-700">{r.ruleId}</div>
+                              <div className="text-slate-400 font-normal">#{r.ruleHash}</div>
+                            </td>
+
+                            {/* Column 2: Category */}
+                            <td className="py-3.5 px-3 whitespace-nowrap">
+                              <span className="font-semibold text-slate-800">
+                                {r.category}
+                              </span>
+                            </td>
+
+                            {/* Column 3: Result */}
+                            <td className="py-3.5 px-3 whitespace-nowrap">
+                              {r.result === 'Satisfied' ? (
+                                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold bg-emerald-100 text-emerald-800 border border-emerald-200 shadow-sm">
+                                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                                  Satisfied (+)
+                                </span>
+                              ) : r.result === 'Not Satisfied' ? (
+                                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold bg-rose-100 text-rose-800 border border-rose-200 shadow-sm">
+                                  <X className="w-3.5 h-3.5 text-rose-600" />
+                                  Not Satisfied (-)
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold bg-slate-100 text-slate-700 border border-slate-200 shadow-sm">
+                                  <HelpCircle className="w-3.5 h-3.5 text-slate-500" />
+                                  Inconclusive (0)
+                                </span>
+                              )}
+                            </td>
+
+                            {/* Column 4: Penalty */}
+                            <td className="py-3.5 px-3 font-mono tabular-nums text-right whitespace-nowrap">
+                              {r.result === 'Satisfied' ? (
+                                <span className="font-bold text-emerald-700 text-sm">
+                                  +{r.penalty.toFixed(2)}
+                                </span>
+                              ) : r.result === 'Not Satisfied' ? (
+                                <span className="font-bold text-rose-700 text-sm">
+                                  -{r.penalty.toFixed(2)}
+                                </span>
+                              ) : (
+                                <span className="font-bold text-slate-500 text-sm">
+                                  0.00
+                                </span>
+                              )}
+                            </td>
+
+                            {/* Column 5: Explanation / Evidence */}
+                            <td className="py-3.5 px-4 text-slate-700 leading-relaxed">
+                              <div className="font-medium">{r.evidence}</div>
+                              <div className="text-[11px] font-mono text-slate-400 mt-1">
+                                Constraint: {r.canonicalConstraint}
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                      <tfoot>
+                        <tr className="bg-slate-50/80 border-t-2 border-slate-200 font-semibold text-xs">
+                          <td colSpan={3} className="py-3 px-4 text-slate-900">
+                            Overall Score: <span className="font-normal text-slate-500">(Positive Pen. + Negative Pen.)</span>
+                          </td>
+                          <td className="py-3 px-3 font-mono tabular-nums text-right text-sm">
+                            <span className={currentRuleEvaluation.overallScore >= 0 ? 'text-emerald-700 font-bold' : 'text-rose-700 font-bold'}>
+                              {currentRuleEvaluation.overallScore > 0 ? '+' : ''}{currentRuleEvaluation.overallScore.toFixed(2)}
+                            </span>
+                          </td>
+                          <td className="py-3 px-4 text-slate-500 font-mono text-[11px]">
+                            Persisted in MySQL <code className="bg-white px-1 py-0.5 rounded border border-slate-200">roadguard_db.feedback_rule_evaluations</code>
+                          </td>
+                        </tr>
+                      </tfoot>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* 4. PRESERVED EXISTING SECTION: 5-STAGE PIPELINE */}
+            <div className="bg-white border border-slate-200 rounded-2xl p-5 sm:p-6 space-y-4">
+              <div>
+                <h3 className="text-base font-bold text-slate-900">
+                  5-Stage Verified Feedback-to-Rule Pipeline vs. Manual Prompt Refinement
+                </h3>
+                <p className="text-xs text-slate-600 mt-1 leading-relaxed">
+                  RoadGuard does not rely on ad-hoc hand-editing of system prompts. Driver corrections
+                  pass through a deterministic compilation and split-isolation pipeline with exact
+                  hashing and post-inference confidence gating.
+                </p>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-5 gap-3 text-xs">
+                {[
+                  {
+                    step: '01. Collection',
+                    detail:
+                      'Driver disputes prediction with structured negative class (manhole, shadow, puddle, paint, speed breaker) and bounding box.',
+                  },
+                  {
+                    step: '02. Verification Gate',
+                    detail:
+                      'Correction remains pending until reviewer quorum verifies true-negative label; held-out test records are strictly blocked.',
+                  },
+                  {
+                    step: '03. Rule Compilation',
+                    detail:
+                      'Canonical taxonomy compiles deterministic rule ID, FNV-1a hash, trigger cues, and penalty delta (no free-form prompt rewriting).',
+                  },
+                  {
+                    step: '04. Versioned Storage',
+                    detail:
+                      'Compiled rule set is versioned (v2.0-verified-calibration) and persisted with source correction provenance IDs.',
+                  },
+                  {
+                    step: '05. Dual Application',
+                    detail:
+                      'Schema constraints guide temperature=0 inference; post-inference gate applies c_cal = max(0, c_raw - penalty) < tau (0.55).',
+                  },
+                ].map((item) => (
+                  <div
+                    key={item.step}
+                    className="p-3.5 rounded-xl border border-slate-200 bg-slate-50 space-y-1.5"
+                  >
+                    <div className="font-bold text-slate-900">{item.step}</div>
+                    <p className="text-[11px] text-slate-600 leading-relaxed">{item.detail}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* 5. PRESERVED EXISTING SECTION: COMPILED RULES TABLE */}
+            <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
+              <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between">
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900">
+                    Compiled Verified Feedback Rules ({rulesToDisplay.length} Active)
+                  </h3>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Reproducible rule definitions compiled exclusively from verified calibration-split
+                    corrections (tau = {CALIBRATION_CONFIDENCE_THRESHOLD_TAU}).
+                  </p>
+                </div>
+                <span className="text-xs font-mono text-slate-500">{ruleVersionToDisplay}</span>
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse text-xs">
+                  <thead>
+                    <tr className="border-b border-slate-200 bg-slate-50 text-slate-600">
+                      <th className="py-2.5 px-4 font-semibold">Rule ID / Hash</th>
+                      <th className="py-2.5 px-3 font-semibold">Negative Class</th>
+                      <th className="py-2.5 px-3 font-semibold">Source Corrections</th>
+                      <th className="py-2.5 px-3 font-semibold text-right">Penalty</th>
+                      <th className="py-2.5 px-4 font-semibold">Compiled Constraint Clause</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {rulesToDisplay.map((rule: VerifiedFeedbackRule) => (
+                      <tr key={rule.ruleId} className="hover:bg-slate-50">
+                        <td className="py-3 px-4 font-mono text-[11px] text-slate-900 whitespace-nowrap">
+                          <div className="font-bold">{rule.ruleId}</div>
+                          <div className="text-slate-500">#{rule.ruleHash}</div>
+                        </td>
+                        <td className="py-3 px-3 font-medium text-slate-800 capitalize whitespace-nowrap">
+                          {rule.trueNegativeClass.replace('_', ' ')}
+                        </td>
+                        <td className="py-3 px-3 font-mono text-[11px] text-slate-600">
+                          {rule.sourceCorrectionIds.join(', ')}
+                        </td>
+                        <td className="py-3 px-3 font-mono tabular-nums text-right font-semibold text-rose-700">
+                          -{rule.confidencePenalty.toFixed(2)}
+                        </td>
+                        <td className="py-3 px-4 text-slate-600 leading-relaxed">
+                          {rule.canonicalConstraint}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* 6. PRESERVED EXISTING SECTION: CALIBRATION SUBMISSIONS LOG */}
+            <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
+              <div className="px-5 py-4 border-b border-slate-200">
+                <h3 className="text-sm font-bold text-slate-900">
+                  Calibration-Split Correction Audit Log
+                </h3>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Notice corr-cal-006 remains pending_verification and is excluded from rule
+                  compilation until reviewer sign-off.
+                </p>
+              </div>
+              <div className="divide-y divide-slate-100 text-xs">
+                {CALIBRATION_CORRECTIONS.map((c) => (
+                  <div key={c.id} className="px-5 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <div>
+                      <div className="font-mono font-semibold text-slate-900">
+                        {c.id} · {c.region} · {c.predictedType} → {c.trueNegativeClass}
+                      </div>
+                      <div className="text-slate-600 mt-0.5">{c.operatorNote}</div>
+                    </div>
+                    <span
+                      className={`font-mono text-[11px] font-semibold shrink-0 ${
+                        c.verificationStatus === 'verified' ? 'text-emerald-700' : 'text-amber-700'
+                      }`}
+                    >
+                      {c.verificationStatus}
+                    </span>
+                  </div>
+                ))}
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* TAB 3: DATASET & SPLIT AUDIT */}
       {activeTab === 'dataset' && report && (

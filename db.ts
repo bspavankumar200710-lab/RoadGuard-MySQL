@@ -55,6 +55,25 @@ interface VerifiedFeedbackRuleRow {
   created_at: string;
 }
 
+export interface RuleEvaluationRow {
+  id: string;
+  image_id: string;
+  image_url: string;
+  location_name: string;
+  capture_timestamp: string;
+  evaluation_timestamp: string;
+  rule_set_version: string;
+  total_rules: number;
+  satisfied_count: number;
+  not_satisfied_count: number;
+  inconclusive_count: number;
+  total_positive_penalty: number;
+  total_negative_penalty: number;
+  overall_score: number;
+  rule_results: any;
+  created_at: string;
+}
+
 function loadJsonSeed<T>(relativePath: string, fallback: T[]): T[] {
   try {
     const fullPath = path.resolve(__dirname, relativePath);
@@ -116,29 +135,14 @@ const agentLearningsStore: AgentLearningRow[] = [
 
 const verifiedRulesStore: VerifiedFeedbackRuleRow[] = [
   {
-    id: 'rule-v2-shadow-1',
-    rule_hash: '7a9b1c2d',
-    rule_set_version: 'v2.0-verified',
-    source_correction_id: 'corr-init-shadow-01',
-    target_hazard_type: 'road_crack',
-    true_negative_class: 'shadow',
-    canonical_constraint: 'Tree branch and bridge silhouettes cast sharp dark contours with soft gradients. Verify jagged structural asphalt fracture before classifying as D00/D10/D20 cracks.',
-    confidence_penalty: 0.150,
-    suppression_threshold: 0.550,
-    verification_status: 'approved',
-    verified_by: 'Faculty Reviewer Admin',
-    verified_at: nowIso,
-    created_at: nowIso,
-  },
-  {
-    id: 'rule-v2-manhole-1',
+    id: 'RULE-01',
     rule_hash: '8f3e4d5c',
-    rule_set_version: 'v2.0-verified',
-    source_correction_id: 'corr-init-manhole-01',
+    rule_set_version: 'v2.0-verified-calibration',
+    source_correction_id: 'corr-cal-001',
     target_hazard_type: 'pothole',
     true_negative_class: 'manhole',
-    canonical_constraint: 'Circular or square metallic municipal sewer covers and utility caps flush with the lane plane are utility hardware, NOT structural potholes (D40).',
-    confidence_penalty: 0.180,
+    canonical_constraint: 'EXCLUDE circular/square flush metallic utility lids, sewer grates, or manhole rims lacking broken asphalt spalling.',
+    confidence_penalty: 0.420,
     suppression_threshold: 0.550,
     verification_status: 'approved',
     verified_by: 'Faculty Reviewer Admin',
@@ -146,14 +150,59 @@ const verifiedRulesStore: VerifiedFeedbackRuleRow[] = [
     created_at: nowIso,
   },
   {
-    id: 'rule-v2-puddle-1',
+    id: 'RULE-02',
+    rule_hash: '7a9b1c2d',
+    rule_set_version: 'v2.0-verified-calibration',
+    source_correction_id: 'corr-cal-002',
+    target_hazard_type: 'road_crack',
+    true_negative_class: 'shadow',
+    canonical_constraint: 'EXCLUDE uniform low-texture dark bands or dappled tree/pole/overpass shadows that preserve intact asphalt aggregate.',
+    confidence_penalty: 0.400,
+    suppression_threshold: 0.550,
+    verification_status: 'approved',
+    verified_by: 'Faculty Reviewer Admin',
+    verified_at: nowIso,
+    created_at: nowIso,
+  },
+  {
+    id: 'RULE-03',
     rule_hash: '9a1b2c3d',
-    rule_set_version: 'v2.0-verified',
-    source_correction_id: 'corr-init-puddle-01',
+    rule_set_version: 'v2.0-verified-calibration',
+    source_correction_id: 'corr-cal-003',
     target_hazard_type: 'pothole',
     true_negative_class: 'water_puddle',
-    canonical_constraint: 'Smooth reflective water pools without broken asphalt crater rims or depth contrast must not be misidentified as deep road craters.',
-    confidence_penalty: 0.120,
+    canonical_constraint: 'EXCLUDE shallow reflective rainwater pools or wet glare patches unless jagged vertical cavity walls are visible.',
+    confidence_penalty: 0.380,
+    suppression_threshold: 0.550,
+    verification_status: 'approved',
+    verified_by: 'Faculty Reviewer Admin',
+    verified_at: nowIso,
+    created_at: nowIso,
+  },
+  {
+    id: 'RULE-04',
+    rule_hash: '3e5f7a1b',
+    rule_set_version: 'v2.0-verified-calibration',
+    source_correction_id: 'corr-cal-004',
+    target_hazard_type: 'road_crack',
+    true_negative_class: 'paint_marking',
+    canonical_constraint: 'EXCLUDE high-luminance white/yellow lane striping, crosswalk bars, and directional thermoplastic pavement markings.',
+    confidence_penalty: 0.440,
+    suppression_threshold: 0.550,
+    verification_status: 'approved',
+    verified_by: 'Faculty Reviewer Admin',
+    verified_at: nowIso,
+    created_at: nowIso,
+  },
+  {
+    id: 'RULE-05',
+    rule_hash: '4c6d8e2f',
+    rule_set_version: 'v2.0-verified-calibration',
+    source_correction_id: 'corr-cal-005',
+    target_hazard_type: 'pothole',
+    true_negative_class: 'speed_breaker',
+    canonical_constraint: 'EXCLUDE intentional painted or molded transverse speed humps / rumble strips spanning full lane width.',
+    confidence_penalty: 0.390,
     suppression_threshold: 0.550,
     verification_status: 'approved',
     verified_by: 'Faculty Reviewer Admin',
@@ -161,6 +210,8 @@ const verifiedRulesStore: VerifiedFeedbackRuleRow[] = [
     created_at: nowIso,
   },
 ];
+
+const ruleEvaluationsStore: RuleEvaluationRow[] = [];
 
 async function executeMockQuery(sql: string, params: any[] = []): Promise<[any, any[]]> {
   const normalized = sql.replace(/\s+/g, ' ').trim();
@@ -471,6 +522,61 @@ async function executeMockQuery(sql: string, params: any[] = []): Promise<[any, 
     verifiedRulesStore.length = 0;
     verifiedRulesStore.push(...remaining);
     return [{ affectedRows: before - verifiedRulesStore.length }, []];
+  }
+
+  // FEEDBACK RULE EVALUATIONS
+  if (upper.includes('FROM FEEDBACK_RULE_EVALUATIONS')) {
+    if (upper.includes('WHERE IMAGE_ID =')) {
+      const [imgId] = params;
+      const filtered = ruleEvaluationsStore
+        .filter((r) => r.image_id === imgId)
+        .sort((a, b) => new Date(b.evaluation_timestamp).getTime() - new Date(a.evaluation_timestamp).getTime());
+      return [filtered.map((r) => ({ ...r })), []];
+    }
+    const sorted = [...ruleEvaluationsStore].sort(
+      (a, b) => new Date(b.evaluation_timestamp).getTime() - new Date(a.evaluation_timestamp).getTime()
+    );
+    return [sorted.map((r) => ({ ...r })), []];
+  }
+
+  if (upper.startsWith('INSERT INTO FEEDBACK_RULE_EVALUATIONS')) {
+    const [
+      id,
+      image_id,
+      image_url,
+      location_name,
+      capture_timestamp,
+      evaluation_timestamp,
+      rule_set_version,
+      total_rules,
+      satisfied_count,
+      not_satisfied_count,
+      inconclusive_count,
+      total_positive_penalty,
+      total_negative_penalty,
+      overall_score,
+      rule_results,
+    ] = params;
+
+    ruleEvaluationsStore.unshift({
+      id,
+      image_id,
+      image_url,
+      location_name: location_name || '',
+      capture_timestamp: capture_timestamp || '',
+      evaluation_timestamp: evaluation_timestamp || new Date().toISOString(),
+      rule_set_version: rule_set_version || 'v2.0-verified-calibration',
+      total_rules: Number(total_rules || 5),
+      satisfied_count: Number(satisfied_count || 0),
+      not_satisfied_count: Number(not_satisfied_count || 0),
+      inconclusive_count: Number(inconclusive_count || 0),
+      total_positive_penalty: Number(total_positive_penalty || 0),
+      total_negative_penalty: Number(total_negative_penalty || 0),
+      overall_score: Number(overall_score || 0),
+      rule_results: typeof rule_results === 'string' ? JSON.parse(rule_results) : rule_results,
+      created_at: new Date().toISOString(),
+    });
+    return [{ affectedRows: 1 }, []];
   }
 
   return [[], []];

@@ -1306,6 +1306,147 @@ app.delete('/api/feedback/rules/:id', async (req, res) => {
 });
 
 // ============================================================
+// FEEDBACK RULE EVALUATIONS API (PERSISTED IN MYSQL)
+// ============================================================
+
+// Initialize table if needed
+async function ensureFeedbackRuleEvaluationTables() {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS feedback_rule_evaluations (
+        id VARCHAR(64) PRIMARY KEY,
+        image_id VARCHAR(64) NOT NULL,
+        image_url LONGTEXT,
+        location_name VARCHAR(255),
+        capture_timestamp VARCHAR(64),
+        evaluation_timestamp VARCHAR(64) NOT NULL,
+        rule_set_version VARCHAR(64) NOT NULL,
+        total_rules INT NOT NULL,
+        satisfied_count INT NOT NULL,
+        not_satisfied_count INT NOT NULL,
+        inconclusive_count INT NOT NULL,
+        total_positive_penalty DECIMAL(6, 3) NOT NULL,
+        total_negative_penalty DECIMAL(6, 3) NOT NULL,
+        overall_score DECIMAL(6, 3) NOT NULL,
+        rule_results JSON NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+  } catch (err) {
+    // handled gracefully
+  }
+}
+ensureFeedbackRuleEvaluationTables();
+
+// GET ALL EVALUATIONS
+app.get('/api/feedback/evaluations', async (_req, res) => {
+  try {
+    const [rows]: any = await pool.execute(
+      `SELECT * FROM feedback_rule_evaluations ORDER BY evaluation_timestamp DESC`
+    );
+    const parsed = (rows || []).map((r: any) => ({
+      ...r,
+      rule_results: typeof r.rule_results === 'string' ? JSON.parse(r.rule_results) : r.rule_results,
+    }));
+    return res.json(parsed);
+  } catch (err: any) {
+    console.error('Error fetching rule evaluations:', err);
+    return res.status(500).json({ error: 'Failed to fetch rule evaluations' });
+  }
+});
+
+// GET EVALUATIONS FOR SPECIFIC IMAGE
+app.get('/api/feedback/evaluations/:imageId', async (req, res) => {
+  try {
+    const { imageId } = req.params;
+    const [rows]: any = await pool.execute(
+      `SELECT * FROM feedback_rule_evaluations WHERE image_id = ? ORDER BY evaluation_timestamp DESC`,
+      [imageId]
+    );
+    const parsed = (rows || []).map((r: any) => ({
+      ...r,
+      rule_results: typeof r.rule_results === 'string' ? JSON.parse(r.rule_results) : r.rule_results,
+    }));
+    return res.json(parsed);
+  } catch (err: any) {
+    console.error('Error fetching evaluations for image:', err);
+    return res.status(500).json({ error: 'Failed to fetch evaluations for image' });
+  }
+});
+
+// SAVE NEW RULE EVALUATION (NEVER OVERWRITES PREVIOUS EVALUATIONS)
+app.post('/api/feedback/evaluations', async (req, res) => {
+  try {
+    const {
+      id = `eval-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      imageId,
+      imageUrl = '',
+      locationName = '',
+      captureTimestamp = '',
+      evaluationTimestamp = new Date().toISOString(),
+      ruleSetVersion = 'v2.0-verified-calibration',
+      totalRules = 5,
+      satisfiedCount = 0,
+      notSatisfiedCount = 0,
+      inconclusiveCount = 0,
+      totalPositivePenalty = 0,
+      totalNegativePenalty = 0,
+      overallScore = 0,
+      ruleResults = [],
+    } = req.body;
+
+    if (!imageId || !Array.isArray(ruleResults)) {
+      return res.status(400).json({ error: 'Missing required evaluation fields (imageId and ruleResults array)' });
+    }
+
+    const ruleResultsJson = JSON.stringify(ruleResults);
+
+    await pool.execute(
+      `INSERT INTO feedback_rule_evaluations (
+        id, image_id, image_url, location_name, capture_timestamp,
+        evaluation_timestamp, rule_set_version, total_rules, satisfied_count,
+        not_satisfied_count, inconclusive_count, total_positive_penalty,
+        total_negative_penalty, overall_score, rule_results
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        imageId,
+        imageUrl,
+        locationName,
+        captureTimestamp,
+        evaluationTimestamp,
+        ruleSetVersion,
+        totalRules,
+        satisfiedCount,
+        notSatisfiedCount,
+        inconclusiveCount,
+        totalPositivePenalty,
+        totalNegativePenalty,
+        overallScore,
+        ruleResultsJson,
+      ]
+    );
+
+    return res.status(201).json({
+      success: true,
+      id,
+      evaluation: {
+        id,
+        imageId,
+        evaluationTimestamp,
+        overallScore,
+        satisfiedCount,
+        notSatisfiedCount,
+        inconclusiveCount,
+      },
+    });
+  } catch (err: any) {
+    console.error('Error saving feedback rule evaluation:', err);
+    return res.status(500).json({ error: 'Failed to save feedback rule evaluation: ' + err?.message });
+  }
+});
+
+// ============================================================
 // SYSTEM & DEPLOYMENT HEALTH CHECK
 // ============================================================
 app.get('/api/health', async (_req, res) => {
