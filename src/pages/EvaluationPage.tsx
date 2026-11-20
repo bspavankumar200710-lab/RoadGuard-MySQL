@@ -58,11 +58,18 @@ export const EvaluationPage: React.FC = () => {
   const [disputeNotes, setDisputeNotes] = useState<string>('');
   const [actionSuccessMsg, setActionSuccessMsg] = useState<string | null>(null);
   const [previewImage, setPreviewImage] = useState<string | null>(null);
+  const isExecutingRef = React.useRef<boolean>(false);
+  const pendingRecordsRef = React.useRef<RoadHazardRecord[] | null>(null);
 
   const executeBenchmark = useCallback(
     async (liveApiOverride?: boolean, recordsOverride?: RoadHazardRecord[]) => {
-      const useLive = liveApiOverride ?? useLiveGemini;
       const recordsToUse = recordsOverride ?? liveDetections;
+      if (isExecutingRef.current) {
+        pendingRecordsRef.current = recordsToUse;
+        return;
+      }
+      isExecutingRef.current = true;
+      const useLive = liveApiOverride ?? useLiveGemini;
       setIsRunning(true);
       setErrorMsg(null);
       setProgressPct(0);
@@ -77,10 +84,18 @@ export const EvaluationPage: React.FC = () => {
           { useLiveApi: useLive }
         );
         setReport(result);
+        setErrorMsg(null);
       } catch (err: any) {
+        console.error('[EvaluationPage] executeBenchmark error:', err);
         setErrorMsg(err?.message || 'Evaluation run failed');
       } finally {
         setIsRunning(false);
+        isExecutingRef.current = false;
+        if (pendingRecordsRef.current) {
+          const nextRecords = pendingRecordsRef.current;
+          pendingRecordsRef.current = null;
+          executeBenchmark(useLive, nextRecords);
+        }
       }
     },
     [useLiveGemini, liveDetections]
