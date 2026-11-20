@@ -371,18 +371,20 @@ export const PostDriveSummaryModal: React.FC<PostDriveSummaryModalProps> = ({
                 </div>
 
                 <div className="p-2.5 rounded-xl bg-slate-900 border border-slate-800 flex items-center gap-2">
-                  <span className="text-base">🛑</span>
+                  <span className="text-base">🚨</span>
                   <div>
-                    <span className="text-[10px] text-slate-400 block font-semibold">Broken Signs</span>
-                    <span className="font-mono font-bold text-white">{summary.typeBreakdown.broken_sign}</span>
+                    <span className="text-[10px] text-slate-400 block font-semibold">Critical Severity</span>
+                    <span className="font-mono font-bold text-rose-400">{summary.severityBreakdown.high}</span>
                   </div>
                 </div>
 
                 <div className="p-2.5 rounded-xl bg-slate-900 border border-slate-800 flex items-center gap-2">
-                  <span className="text-base">🏎️</span>
+                  <span className="text-base">🟢</span>
                   <div>
-                    <span className="text-[10px] text-slate-400 block font-semibold">Speed Violations</span>
-                    <span className="font-mono font-bold text-white">{summary.typeBreakdown.vehicle_speed}</span>
+                    <span className="text-[10px] text-slate-400 block font-semibold">Minor / Moderate</span>
+                    <span className="font-mono font-bold text-emerald-400">
+                      {summary.severityBreakdown.medium + summary.severityBreakdown.low}
+                    </span>
                   </div>
                 </div>
               </div>

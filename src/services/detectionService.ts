@@ -5,6 +5,7 @@ import {
   AILearningStats,
   HazardType,
   VerificationStatusType,
+  ImageSourceType,
 } from '../types/detection';
 import { indexedDBService } from './indexedDBService';
 import { agentLearningService } from './agentLearningService';
@@ -221,7 +222,7 @@ class DetectionService {
       damageClass?: string;
       damageName?: string;
       annotatedImageUrl?: string;
-      imageSource?: 'live_camera' | 'manual_upload';
+      imageSource?: ImageSourceType;
       aiEngine?: 'yolov5' | 'gemini-feedback' | 'gemini-standard' | 'yolov8-nano' | 'gemini-vision';
       verificationStatus?: VerificationStatusType;
     }

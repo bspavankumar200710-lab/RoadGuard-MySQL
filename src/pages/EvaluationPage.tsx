@@ -9,6 +9,8 @@ import {
   CALIBRATION_CORRECTIONS,
   CALIBRATION_CONFIDENCE_THRESHOLD_TAU,
 } from '../services/feedbackEngine';
+import { detectionService } from '../services/detectionService';
+import { RoadHazardRecord, AILearningStats } from '../types/detection';
 import {
   Play,
   Download,
@@ -21,12 +23,22 @@ import {
   Sliders,
   Eye,
   Database,
+  Check,
+  X,
+  Sparkles,
+  Brain,
+  ThumbsUp,
+  ThumbsDown,
+  Filter,
+  RefreshCw,
+  Search,
+  ExternalLink,
 } from 'lucide-react';
 
-type EvalSectionTab = 'baselines' | 'mechanism' | 'dataset' | 'deployment';
+type EvalSectionTab = 'live-history' | 'baselines' | 'mechanism' | 'dataset' | 'deployment';
 
 export const EvaluationPage: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<EvalSectionTab>('baselines');
+  const [activeTab, setActiveTab] = useState<EvalSectionTab>('live-history');
   const [report, setReport] = useState<FullBenchmarkReport | null>(null);
   const [isRunning, setIsRunning] = useState<boolean>(false);
   const [progressPct, setProgressPct] = useState<number>(0);
@@ -35,6 +47,51 @@ export const EvaluationPage: React.FC = () => {
   const [sampleFilter, setSampleFilter] = useState<'all' | 'positive' | 'negative'>('all');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [useLiveGemini, setUseLiveGemini] = useState<boolean>(false);
+
+  // Live Field Verification & History Audit State (Connected to MySQL & History)
+  const [liveDetections, setLiveDetections] = useState<RoadHazardRecord[]>([]);
+  const [aiStats, setAiStats] = useState<AILearningStats>(() => detectionService.getAILearningStats());
+  const [liveStatusFilter, setLiveStatusFilter] = useState<'all' | 'verified' | 'rejected' | 'pending'>('all');
+  const [liveTypeFilter, setLiveTypeFilter] = useState<'all' | 'pothole' | 'road_crack'>('all');
+  const [disputeRecordId, setDisputeRecordId] = useState<string | null>(null);
+  const [disputeReason, setDisputeReason] = useState<string>('manhole');
+  const [disputeNotes, setDisputeNotes] = useState<string>('');
+  const [actionSuccessMsg, setActionSuccessMsg] = useState<string | null>(null);
+  const [previewImage, setPreviewImage] = useState<string | null>(null);
+
+  // Subscribe to live detections from MySQL and IndexedDB
+  useEffect(() => {
+    const unsubDetections = detectionService.subscribe((records) => {
+      setLiveDetections(records);
+    });
+    const unsubStats = detectionService.subscribeLearning((stats) => {
+      setAiStats(stats);
+    });
+    return () => {
+      unsubDetections();
+      unsubStats();
+    };
+  }, []);
+
+  const handleConfirmLiveHazard = async (id: string) => {
+    const res = await detectionService.confirmHazard(id);
+    if (res) {
+      setActionSuccessMsg(`Hazard verified as valid road damage in database. Model reinforced!`);
+      setTimeout(() => setActionSuccessMsg(null), 4000);
+    }
+  };
+
+  const handleDisputeLiveHazard = async () => {
+    if (!disputeRecordId) return;
+    const notes = disputeNotes.trim() ? disputeNotes.trim() : `Driver flagged as non-hazard: ${disputeReason}`;
+    const res = await detectionService.disputeHazard(disputeRecordId, notes, disputeReason as any);
+    if (res) {
+      setActionSuccessMsg(`False alarm corrected! Feedback rule created to suppress ${disputeReason.replace('_', ' ')}.`);
+      setTimeout(() => setActionSuccessMsg(null), 4000);
+    }
+    setDisputeRecordId(null);
+    setDisputeNotes('');
+  };
 
   const executeBenchmark = useCallback(async (liveApiOverride?: boolean) => {
     const useLive = liveApiOverride ?? useLiveGemini;
@@ -222,10 +279,11 @@ export const EvaluationPage: React.FC = () => {
       <div className="flex items-center gap-1 p-1 bg-slate-200/70 rounded-xl w-fit overflow-x-auto max-w-full">
         {(
           [
-            { id: 'baselines', label: 'Baselines & Metrics' },
-            { id: 'mechanism', label: 'Feedback Mechanism' },
-            { id: 'dataset', label: 'Dataset & Split Audit' },
-            { id: 'deployment', label: 'Deployment & Calibration' },
+            { id: 'live-history', label: `📊 Live Field History (${liveDetections.length})` },
+            { id: 'baselines', label: '🔬 3-Way Benchmark Split' },
+            { id: 'mechanism', label: '🧠 Feedback Gating Rules' },
+            { id: 'dataset', label: '🗺️ Dataset & Split Audit' },
+            { id: 'deployment', label: '⚡ Deployment & Calibration' },
           ] as const
         ).map((tab) => (
           <button
@@ -241,6 +299,344 @@ export const EvaluationPage: React.FC = () => {
           </button>
         ))}
       </div>
+
+      {/* TAB 0: LIVE FIELD HISTORY & DRIVER VERIFICATION AUDIT */}
+      {activeTab === 'live-history' && (() => {
+        const isRecordConfirmed = (d: RoadHazardRecord) =>
+          d.verifiedStatus === 'confirmed' || d.verificationStatus === 'verified';
+
+        const isRecordDisputed = (d: RoadHazardRecord) =>
+          d.verifiedStatus === 'disputed' || d.verificationStatus === 'rejected';
+
+        const isRecordPending = (d: RoadHazardRecord) =>
+          !isRecordConfirmed(d) && !isRecordDisputed(d);
+
+        const liveConfirmedList = liveDetections.filter(isRecordConfirmed);
+        const liveDisputedList = liveDetections.filter(isRecordDisputed);
+        const livePendingList = liveDetections.filter(isRecordPending);
+
+        const totalEvaluated = liveConfirmedList.length + liveDisputedList.length;
+        const livePrecision = totalEvaluated > 0 ? (liveConfirmedList.length / totalEvaluated) * 100 : 100;
+
+        const filteredRecords = liveDetections.filter((d) => {
+          if (liveTypeFilter !== 'all' && d.type !== liveTypeFilter) return false;
+          if (liveStatusFilter === 'verified' && !isRecordConfirmed(d)) return false;
+          if (liveStatusFilter === 'rejected' && !isRecordDisputed(d)) return false;
+          if (liveStatusFilter === 'pending' && !isRecordPending(d)) return false;
+          return true;
+        });
+
+        return (
+          <div className="space-y-6">
+            {/* Action Success Toast Banner */}
+            {actionSuccessMsg && (
+              <div className="p-4 rounded-xl bg-emerald-50 border border-emerald-300 text-emerald-900 text-xs font-semibold flex items-center justify-between shadow-sm animate-in fade-in">
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <span>{actionSuccessMsg}</span>
+                </div>
+                <button onClick={() => setActionSuccessMsg(null)} className="text-emerald-700 hover:text-emerald-900">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            )}
+
+            {/* Real-Time Live Field Metrics Strip */}
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+              <div className="bg-white border border-slate-200 rounded-xl p-4 space-y-1 shadow-sm">
+                <span className="text-xs text-slate-500 font-medium block">Total Field Reports</span>
+                <div className="text-2xl font-bold text-slate-900 font-mono tabular-nums">
+                  {liveDetections.length}
+                </div>
+                <p className="text-[11px] text-slate-500">
+                  Saved in MySQL database from camera & uploads
+                </p>
+              </div>
+
+              <div className="bg-white border border-slate-200 rounded-xl p-4 space-y-1 shadow-sm">
+                <span className="text-xs text-slate-500 font-medium block">Verified Valid Damage</span>
+                <div className="flex items-baseline gap-2 font-mono tabular-nums">
+                  <span className="text-2xl font-bold text-emerald-700">
+                    {liveConfirmedList.length}
+                  </span>
+                  <span className="text-xs text-slate-500">
+                    True Positives
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-500">
+                  Confirmed road potholes & cracks
+                </p>
+              </div>
+
+              <div className="bg-white border border-slate-200 rounded-xl p-4 space-y-1 shadow-sm">
+                <span className="text-xs text-slate-500 font-medium block">False Positives Corrected</span>
+                <div className="flex items-baseline gap-2 font-mono tabular-nums">
+                  <span className="text-2xl font-bold text-rose-600">
+                    {liveDisputedList.length}
+                  </span>
+                  <span className="text-xs text-slate-500">
+                    Suppressed
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-500">
+                  {liveDisputedList.length > 0 ? 'Active feedback rules generated' : 'No false alarms flagged yet'}
+                </p>
+              </div>
+
+              <div className="bg-white border border-slate-200 rounded-xl p-4 space-y-1 shadow-sm">
+                <span className="text-xs text-slate-500 font-medium block">Live Field Precision</span>
+                <div className="flex items-baseline gap-2 font-mono tabular-nums">
+                  <span className="text-2xl font-bold text-blue-700">
+                    {totalEvaluated > 0 ? `${livePrecision.toFixed(1)}%` : '100%'}
+                  </span>
+                  <span className="text-xs text-slate-500">
+                    {totalEvaluated} audited
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-500">
+                  AI Accuracy Score: {aiStats.modelAccuracy}%
+                </p>
+              </div>
+            </div>
+
+            {/* Filter Bar */}
+            <div className="bg-white border border-slate-200 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-sm">
+              <div className="flex items-center gap-2 flex-wrap">
+                <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl text-xs">
+                  {(
+                    [
+                      { id: 'all', label: `All Reports (${liveDetections.length})` },
+                      { id: 'verified', label: `✅ Verified Valid (${liveConfirmedList.length})` },
+                      { id: 'rejected', label: `❌ False Alarms (${liveDisputedList.length})` },
+                      { id: 'pending', label: `⏳ Pending (${livePendingList.length})` },
+                    ] as const
+                  ).map((st) => (
+                    <button
+                      key={st.id}
+                      onClick={() => setLiveStatusFilter(st.id)}
+                      className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all whitespace-nowrap ${
+                        liveStatusFilter === st.id
+                          ? 'bg-blue-600 text-white shadow-sm'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      {st.label}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl text-xs">
+                  {(
+                    [
+                      { id: 'all', label: 'All Defects' },
+                      { id: 'pothole', label: '🕳️ Potholes' },
+                      { id: 'road_crack', label: '⚡ Cracks' },
+                    ] as const
+                  ).map((tp) => (
+                    <button
+                      key={tp.id}
+                      onClick={() => setLiveTypeFilter(tp.id)}
+                      className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all whitespace-nowrap ${
+                        liveTypeFilter === tp.id
+                          ? 'bg-slate-900 text-white shadow-sm'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      {tp.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="text-xs text-slate-500 font-mono">
+                Showing {filteredRecords.length} of {liveDetections.length} records
+              </div>
+            </div>
+
+            {/* Table of Live Detections Connected From History */}
+            <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-sm">
+              <div className="px-5 py-4 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                    <Database className="w-4 h-4 text-blue-600" />
+                    <span>Real-Time Defect Verification & Accuracy Audit</span>
+                  </h3>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Directly synchronizes with MySQL database and History. Verifying or disputing any record updates accuracy and triggers dynamic feedback rules.
+                  </p>
+                </div>
+                <span className="text-[11px] font-bold px-2.5 py-1 rounded-full bg-emerald-100 text-emerald-800">
+                  ● Live Database Sync Active
+                </span>
+              </div>
+
+              {filteredRecords.length === 0 ? (
+                <div className="p-12 text-center text-slate-500 text-xs space-y-2">
+                  <Database className="w-8 h-8 mx-auto text-slate-400" />
+                  <p className="font-semibold text-slate-700">No defect records matching this filter.</p>
+                  <p>Capture road photographs via the live camera or manual upload to see them appear here in real time.</p>
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse text-xs">
+                    <thead>
+                      <tr className="border-b border-slate-200 bg-slate-50 text-slate-600">
+                        <th className="py-3 px-4 font-semibold">Photograph</th>
+                        <th className="py-3 px-3 font-semibold">Damage Category</th>
+                        <th className="py-3 px-3 font-semibold text-right">Confidence</th>
+                        <th className="py-3 px-3 font-semibold text-center">Severity</th>
+                        <th className="py-3 px-3 font-semibold">AI Engine</th>
+                        <th className="py-3 px-4 font-semibold">Verification Status & Audit</th>
+                        <th className="py-3 px-4 font-semibold">Feedback Rule Adaptation</th>
+                        <th className="py-3 px-4 font-semibold text-right">Verification Action</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {filteredRecords.map((item) => {
+                        const isConfirmed = isRecordConfirmed(item);
+                        const isDisputed = isRecordDisputed(item);
+
+                        return (
+                          <tr key={item.id} className="hover:bg-slate-50 transition-colors">
+                            <td className="py-3 px-4">
+                              {item.imageUrl ? (
+                                <button
+                                  onClick={() => setPreviewImage(item.imageUrl || null)}
+                                  className="w-14 h-11 rounded-lg overflow-hidden border border-slate-200 bg-slate-900 block group relative shadow-sm"
+                                  title="Click to view full photograph"
+                                >
+                                  <img
+                                    src={item.imageUrl}
+                                    alt="Captured hazard"
+                                    className="w-full h-full object-cover group-hover:scale-110 transition-transform"
+                                  />
+                                  <div className="absolute inset-0 bg-black/30 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-white">
+                                    <Eye className="w-3.5 h-3.5" />
+                                  </div>
+                                </button>
+                              ) : (
+                                <div className="w-14 h-11 rounded-lg bg-slate-100 border border-slate-200 flex items-center justify-center text-slate-400 text-[10px]">
+                                  No photo
+                                </div>
+                              )}
+                            </td>
+
+                            <td className="py-3 px-3">
+                              <div className="font-bold text-slate-900 flex items-center gap-1.5">
+                                <span>{item.type === 'pothole' ? '🕳️' : '⚡'}</span>
+                                <span>{item.damageName || (item.type === 'pothole' ? 'Pothole' : 'Road Crack')}</span>
+                              </div>
+                              <span className="text-[10px] font-mono text-slate-500">
+                                {item.damageClass || (item.type === 'pothole' ? 'D40' : 'D00-D20')} · {item.locationName || 'Field'}
+                              </span>
+                            </td>
+
+                            <td className="py-3 px-3 text-right font-mono font-bold text-slate-900">
+                              {Math.round((item.confidence || 0.88) * 100)}%
+                            </td>
+
+                            <td className="py-3 px-3 text-center">
+                              <span
+                                className={`text-[9px] uppercase font-bold px-2 py-0.5 rounded-full ${
+                                  item.severity === 'high'
+                                    ? 'bg-rose-100 text-rose-700 border border-rose-200'
+                                    : item.severity === 'medium'
+                                    ? 'bg-amber-100 text-amber-700 border border-amber-200'
+                                    : 'bg-emerald-100 text-emerald-700 border border-emerald-200'
+                                }`}
+                              >
+                                {item.severity}
+                              </span>
+                            </td>
+
+                            <td className="py-3 px-3 font-mono text-[11px] text-slate-700">
+                              {item.aiEngine === 'yolov5'
+                                ? '⚡ YOLOv5'
+                                : item.aiEngine === 'gemini-standard'
+                                ? '☁️ Standard Gemini'
+                                : '🧠 Feedback Gemini'}
+                            </td>
+
+                            <td className="py-3 px-4">
+                              {isConfirmed ? (
+                                <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-full border border-emerald-200">
+                                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                                  <span>Verified Valid Damage (TP)</span>
+                                </span>
+                              ) : isDisputed ? (
+                                <div>
+                                  <span className="inline-flex items-center gap-1 text-[11px] font-bold text-rose-700 bg-rose-50 px-2.5 py-1 rounded-full border border-rose-200">
+                                    <AlertTriangle className="w-3.5 h-3.5 text-rose-600" />
+                                    <span>False Alarm Flagged</span>
+                                  </span>
+                                  {item.disputeReason && (
+                                    <div className="text-[10px] text-slate-500 mt-0.5 capitalize">
+                                      Reason: {item.disputeReason.replace('_', ' ')}
+                                    </div>
+                                  )}
+                                </div>
+                              ) : (
+                                <span className="inline-flex items-center gap-1 text-[11px] font-medium text-amber-700 bg-amber-50 px-2 py-0.5 rounded-full border border-amber-200">
+                                  <Clock className="w-3 h-3 text-amber-600" />
+                                  <span>Pending Review</span>
+                                </span>
+                              )}
+                            </td>
+
+                            <td className="py-3 px-4 text-[11px]">
+                              {isConfirmed ? (
+                                <div className="text-emerald-700 font-medium">
+                                  <span>Positive weight reinforcement (+0.04) applied</span>
+                                </div>
+                              ) : isDisputed ? (
+                                <div className="text-purple-700 font-semibold flex items-center gap-1">
+                                  <Brain className="w-3.5 h-3.5 shrink-0 text-purple-600" />
+                                  <span>Suppression Rule Active ({item.disputeReason || 'non-hazard'})</span>
+                                </div>
+                              ) : (
+                                <span className="text-slate-400 italic">No feedback rule applied yet</span>
+                              )}
+                            </td>
+
+                            <td className="py-3 px-4 text-right">
+                              <div className="flex items-center justify-end gap-1.5">
+                                {!isConfirmed && (
+                                  <button
+                                    onClick={() => handleConfirmLiveHazard(item.id)}
+                                    className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[11px] transition-colors shadow-sm flex items-center gap-1"
+                                    title="Confirm as legitimate road defect"
+                                  >
+                                    <Check className="w-3 h-3" />
+                                    <span>Verify</span>
+                                  </button>
+                                )}
+                                {!isDisputed && (
+                                  <button
+                                    onClick={() => {
+                                      setDisputeRecordId(item.id);
+                                      setDisputeReason('manhole');
+                                      setDisputeNotes('');
+                                    }}
+                                    className="px-2.5 py-1 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 font-bold text-[11px] transition-colors flex items-center gap-1"
+                                    title="Flag as false alarm (shadow, manhole, water puddle)"
+                                  >
+                                    <AlertTriangle className="w-3 h-3" />
+                                    <span>Dispute</span>
+                                  </button>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* TAB 1: BASELINES & METRICS */}
       {activeTab === 'baselines' && report && stdCand && fbCand && edgeCand && (
@@ -1039,6 +1435,108 @@ export const EvaluationPage: React.FC = () => {
                 </p>
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Dispute / False Alarm Flagging Modal inside Evaluation */}
+      {disputeRecordId && (
+        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-md w-full overflow-hidden shadow-2xl border border-slate-200 animate-in fade-in zoom-in-95 duration-150">
+            <div className="p-4 bg-slate-900 text-white flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Brain className="w-5 h-5 text-purple-400" />
+                <h4 className="font-extrabold text-sm">Flag False Alarm & Generate Rule</h4>
+              </div>
+              <button onClick={() => setDisputeRecordId(null)} className="p-1 rounded-lg text-slate-400 hover:text-white">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4 text-xs">
+              <div>
+                <label className="font-bold text-slate-800 block mb-1.5">
+                  What caused this false alarm? (Actual object)
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  {[
+                    { id: 'manhole', label: '🔘 Manhole Cover' },
+                    { id: 'shadow', label: '🌲 Tree / Viaduct Shadow' },
+                    { id: 'water_puddle', label: '💧 Water Reflection / Puddle' },
+                    { id: 'paint_marking', label: '🎨 Road Stripe / Paint' },
+                    { id: 'speed_breaker', label: '🛑 Speed Hump' },
+                    { id: 'normal_road', label: '🛣️ Normal Asphalt Texture' },
+                  ].map((cat) => (
+                    <button
+                      key={cat.id}
+                      type="button"
+                      onClick={() => setDisputeReason(cat.id)}
+                      className={`p-2.5 rounded-xl border text-left font-semibold text-[11px] transition-all ${
+                        disputeReason === cat.id
+                          ? 'bg-purple-600 border-purple-500 text-white shadow-sm'
+                          : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100'
+                      }`}
+                    >
+                      {cat.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <label className="font-bold text-slate-800 block mb-1">
+                  Optional Reviewer Notes:
+                </label>
+                <input
+                  type="text"
+                  value={disputeNotes}
+                  onChange={(e) => setDisputeNotes(e.target.value)}
+                  placeholder="e.g. Utility iron cover mistaken for cavity"
+                  className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs focus:ring-2 focus:ring-purple-500 focus:outline-none"
+                />
+              </div>
+
+              <div className="p-3 rounded-xl bg-purple-50 border border-purple-200 text-purple-900 text-[11px] flex items-center gap-2">
+                <Sparkles className="w-4 h-4 text-purple-600 shrink-0" />
+                <span>
+                  This immediately saves to MySQL and creates a verified suppression rule to eliminate similar false positives.
+                </span>
+              </div>
+            </div>
+
+            <div className="p-4 border-t border-slate-200 bg-slate-50 flex items-center justify-between">
+              <button
+                onClick={() => setDisputeRecordId(null)}
+                className="py-2 px-3 text-slate-600 hover:text-slate-900 font-semibold text-xs"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleDisputeLiveHazard}
+                className="py-2 px-4 bg-purple-600 hover:bg-purple-700 text-white font-bold rounded-xl text-xs flex items-center gap-1.5 shadow-md shadow-purple-600/25 transition-all"
+              >
+                <Brain className="w-3.5 h-3.5" />
+                <span>Save to Database & Apply Rule</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Photograph Preview Modal */}
+      {previewImage && (
+        <div
+          onClick={() => setPreviewImage(null)}
+          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 cursor-pointer"
+        >
+          <div className="relative max-w-2xl w-full bg-slate-950 rounded-2xl overflow-hidden border border-slate-800">
+            <img src={previewImage} alt="Hazard preview" className="w-full h-auto max-h-[80vh] object-contain" />
+            <button
+              onClick={() => setPreviewImage(null)}
+              className="absolute top-3 right-3 p-1.5 rounded-full bg-black/60 text-white hover:bg-black/80"
+            >
+              <X className="w-4 h-4" />
+            </button>
           </div>
         </div>
       )}

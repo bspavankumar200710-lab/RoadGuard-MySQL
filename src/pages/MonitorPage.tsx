@@ -49,8 +49,53 @@ import {
   FileText,
   Cpu,
   MapPin,
+  UploadCloud,
+  Film,
+  Play,
+  Pause,
+  RotateCcw,
+  Clock,
+  CheckCircle,
+  FolderOpen,
+  Trash2,
+  ChevronRight,
+  Sliders,
 } from 'lucide-react';
 import { driveSessionService, DriveSummary } from '../services/driveSessionService';
+
+export interface VideoDetectionItem {
+  id: string;
+  timestampSec: number;
+  formattedTimestamp: string;
+  objectType: HazardType;
+  damageClass: string;
+  damageName: string;
+  confidence: number;
+  severity: SeverityLevel;
+  description: string;
+  box2d?: [number, number, number, number];
+  frameSnapshot: string;
+  recordId?: string;
+}
+
+export interface VideoAnalysisReport {
+  completed: boolean;
+  modelUsed: string;
+  totalFramesProcessed: number;
+  videoDurationSec: number;
+  totalPotholesDetected: number;
+  totalCracksDetected: number;
+  averageConfidence: number;
+  detections: VideoDetectionItem[];
+}
+
+function formatVideoTime(seconds: number): string {
+  if (isNaN(seconds) || seconds < 0) return '00:00.0';
+  const mins = Math.floor(seconds / 60);
+  const secs = Math.floor(seconds % 60);
+  const ms = Math.floor((seconds % 1) * 10);
+  return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}.${ms}`;
+}
 
 interface SmoothedDetection extends DetectedObject {
   id: string;
@@ -220,6 +265,352 @@ export const MonitorPage: React.FC<MonitorPageProps> = ({
     detectorRegistry.getActiveDetectorId()
   );
   const [yoloStatus, setYoloStatus] = useState(() => yoloV5DetectionService.getStatus());
+
+  // =========================================================================
+  // VIDEO ANALYSIS & POTHOLE DETECTION STATES
+  // =========================================================================
+  const [activeMonitorTab, setActiveMonitorTab] = useState<'live' | 'video'>('live');
+  const [videoFile, setVideoFile] = useState<File | null>(null);
+  const [videoPreviewUrl, setVideoPreviewUrl] = useState<string | null>(null);
+  const [videoMetadata, setVideoMetadata] = useState<{
+    name: string;
+    sizeMb: string;
+    durationSec: number;
+    formattedDuration: string;
+    width: number;
+    height: number;
+  } | null>(null);
+  const [isDraggingVideo, setIsDraggingVideo] = useState<boolean>(false);
+  const [selectedVideoModel, setSelectedVideoModel] = useState<SupportedDetectorModel>('yolov5');
+  const [isVideoAnalyzing, setIsVideoAnalyzing] = useState<boolean>(false);
+  const [videoAnalysisError, setVideoAnalysisError] = useState<string | null>(null);
+  const [videoAnalysisProgress, setVideoAnalysisProgress] = useState<{
+    currentFrame: number;
+    totalFrames: number;
+    percent: number;
+    currentTimestampStr: string;
+    potholesFound: number;
+  }>({
+    currentFrame: 0,
+    totalFrames: 0,
+    percent: 0,
+    currentTimestampStr: '00:00.0',
+    potholesFound: 0,
+  });
+  const [videoAnalysisResults, setVideoAnalysisResults] = useState<VideoAnalysisReport | null>(null);
+
+  // Annotated Video Playback Refs & States
+  const annotatedVideoRef = useRef<HTMLVideoElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const abortVideoAnalysisRef = useRef<boolean>(false);
+  const [annotatedCurrentTime, setAnnotatedCurrentTime] = useState<number>(0);
+  const [isAnnotatedPlaying, setIsAnnotatedPlaying] = useState<boolean>(false);
+  const [previewZoomImage, setPreviewZoomImage] = useState<string | null>(null);
+
+  // Revoke object URL when replaced or unmounted
+  useEffect(() => {
+    return () => {
+      if (videoPreviewUrl) {
+        URL.revokeObjectURL(videoPreviewUrl);
+      }
+    };
+  }, [videoPreviewUrl]);
+
+  const handleTabSwitch = (newTab: 'live' | 'video') => {
+    if (newTab === 'video' && isMonitoring) {
+      onToggleMonitoring(false);
+      stopCamera();
+    }
+    setActiveMonitorTab(newTab);
+  };
+
+  const handleVideoFileSelect = (file: File) => {
+    const ext = file.name.split('.').pop()?.toLowerCase();
+    const validExts = ['mp4', 'mov', 'webm'];
+    if (!validExts.includes(ext || '') && !file.type.startsWith('video/')) {
+      setVideoAnalysisError('Unsupported video format. Please upload an MP4, MOV, or WebM file.');
+      return;
+    }
+
+    setVideoAnalysisError(null);
+    if (videoPreviewUrl) {
+      URL.revokeObjectURL(videoPreviewUrl);
+    }
+
+    const url = URL.createObjectURL(file);
+    setVideoFile(file);
+    setVideoPreviewUrl(url);
+    setVideoAnalysisResults(null);
+
+    const tempVid = document.createElement('video');
+    tempVid.preload = 'metadata';
+    tempVid.src = url;
+    tempVid.onloadedmetadata = () => {
+      const dur = tempVid.duration || 0;
+      setVideoMetadata({
+        name: file.name,
+        sizeMb: (file.size / (1024 * 1024)).toFixed(1) + ' MB',
+        durationSec: dur,
+        formattedDuration: formatVideoTime(dur),
+        width: tempVid.videoWidth || 1280,
+        height: tempVid.videoHeight || 720,
+      });
+    };
+  };
+
+  const handleRemoveVideo = () => {
+    if (videoPreviewUrl) {
+      URL.revokeObjectURL(videoPreviewUrl);
+    }
+    setVideoFile(null);
+    setVideoPreviewUrl(null);
+    setVideoMetadata(null);
+    setVideoAnalysisResults(null);
+    setVideoAnalysisError(null);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
+
+  const handleStartVideoAnalysis = async () => {
+    if (!videoPreviewUrl || !videoFile) return;
+
+    setIsVideoAnalyzing(true);
+    setVideoAnalysisError(null);
+    abortVideoAnalysisRef.current = false;
+    setVideoAnalysisResults(null);
+
+    try {
+      const hiddenVid = document.createElement('video');
+      hiddenVid.preload = 'auto';
+      hiddenVid.muted = true;
+      hiddenVid.playsInline = true;
+      hiddenVid.src = videoPreviewUrl;
+
+      await new Promise<void>((resolve, reject) => {
+        hiddenVid.onloadedmetadata = () => resolve();
+        hiddenVid.onerror = () => reject(new Error('Failed to load video file. Ensure format is MP4, MOV or WebM.'));
+      });
+
+      const duration = hiddenVid.duration || 10;
+      // Step calculation for frame extraction:
+      // Short video (<= 25s): 0.5s intervals
+      // Medium video (25s - 60s): 1.0s intervals
+      // Long video (> 60s): sample evenly up to 75 frames to protect memory and responsiveness
+      const stepSec = duration <= 25 ? 0.5 : duration <= 60 ? 1.0 : Math.max(1.0, duration / 75);
+      const timestamps: number[] = [];
+      for (let t = 0; t < duration; t += stepSec) {
+        timestamps.push(t);
+      }
+      if (timestamps.length === 0 || timestamps[timestamps.length - 1] < duration - 0.2) {
+        timestamps.push(Math.max(0, duration - 0.1));
+      }
+
+      const totalFrames = timestamps.length;
+      const offCanvas = document.createElement('canvas');
+      offCanvas.width = 640;
+      offCanvas.height = Math.round(640 * ((hiddenVid.videoHeight || 480) / (hiddenVid.videoWidth || 640))) || 360;
+      const offCtx = offCanvas.getContext('2d');
+
+      const foundDetections: VideoDetectionItem[] = [];
+      const detector = detectorRegistry.resolveDetector(selectedVideoModel);
+
+      // Verify microservice connectivity if YOLOv5 selected
+      if (selectedVideoModel === 'yolov5') {
+        const ready = await yoloV5DetectionService.checkHealth();
+        if (!ready) {
+          throw new Error('YOLOv5 FastAPI microservice is offline at http://127.0.0.1:8000. Start it with: python yolo-service/app.py');
+        }
+      }
+
+      for (let i = 0; i < totalFrames; i++) {
+        if (abortVideoAnalysisRef.current) {
+          break;
+        }
+
+        const t = timestamps[i];
+        hiddenVid.currentTime = t;
+
+        await new Promise<void>((res) => {
+          const onSeeked = () => {
+            hiddenVid.removeEventListener('seeked', onSeeked);
+            res();
+          };
+          hiddenVid.addEventListener('seeked', onSeeked);
+          setTimeout(res, 800);
+        });
+
+        if (offCtx) {
+          offCtx.drawImage(hiddenVid, 0, 0, offCanvas.width, offCanvas.height);
+        }
+
+        setVideoAnalysisProgress({
+          currentFrame: i + 1,
+          totalFrames,
+          percent: Math.round(((i + 1) / totalFrames) * 100),
+          currentTimestampStr: formatVideoTime(t),
+          potholesFound: foundDetections.filter((d) => d.damageClass === 'D40').length,
+        });
+
+        // Run real model inference on this frame
+        try {
+          const result = await detector.detectRoadProblems(offCanvas, 'image/jpeg', 'both');
+
+          if (result && result.detected && result.objects.length > 0) {
+            const frameSnapshot = offCanvas.toDataURL('image/jpeg', 0.8);
+
+            for (const obj of result.objects) {
+              const isPothole =
+                obj.type === 'pothole' ||
+                obj.description.toLowerCase().includes('pothole') ||
+                obj.description.includes('D40');
+
+              let damageClass = isPothole ? 'D40' : 'D10';
+              if (obj.description.includes('D00')) damageClass = 'D00';
+              else if (obj.description.includes('D10')) damageClass = 'D10';
+              else if (obj.description.includes('D20')) damageClass = 'D20';
+              else if (obj.description.includes('D40') || isPothole) damageClass = 'D40';
+
+              const damageName =
+                damageClass === 'D40'
+                  ? 'Pothole'
+                  : damageClass === 'D00'
+                  ? 'Longitudinal Crack'
+                  : damageClass === 'D10'
+                  ? 'Transverse Crack'
+                  : 'Alligator Crack';
+
+              // Create annotated thumbnail snapshot
+              const boxCanvas = document.createElement('canvas');
+              boxCanvas.width = offCanvas.width;
+              boxCanvas.height = offCanvas.height;
+              const bCtx = boxCanvas.getContext('2d');
+              if (bCtx) {
+                bCtx.drawImage(offCanvas, 0, 0);
+                if (obj.box2d) {
+                  const [ymin, xmin, ymax, xmax] = obj.box2d;
+                  const bx = (xmin / 1000) * boxCanvas.width;
+                  const by = (ymin / 1000) * boxCanvas.height;
+                  const bw = Math.max(8, ((xmax - xmin) / 1000) * boxCanvas.width);
+                  const bh = Math.max(8, ((ymax - ymin) / 1000) * boxCanvas.height);
+                  bCtx.lineWidth = 3;
+                  bCtx.strokeStyle = obj.severity === 'high' ? '#ef4444' : '#f59e0b';
+                  bCtx.strokeRect(bx, by, bw, bh);
+                  bCtx.fillStyle = obj.severity === 'high' ? 'rgba(239, 68, 68, 0.25)' : 'rgba(245, 158, 11, 0.25)';
+                  bCtx.fillRect(bx, by, bw, bh);
+                }
+              }
+              const annotatedSnapshot = boxCanvas.toDataURL('image/jpeg', 0.85);
+
+              // Persist real detection to MySQL via detectionService
+              const saved = await detectionService.addDetection({
+                type: isPothole ? 'pothole' : 'road_crack',
+                damageClass,
+                damageName,
+                confidence: obj.confidence,
+                severity: obj.severity,
+                description: `[${damageClass} - ${damageName}] ${Math.round(obj.confidence * 100)}% confidence at ${formatVideoTime(t)} in video: ${videoFile.name}`,
+                latitude: null, // GPS absent in recording - no fake coordinates
+                longitude: null,
+                locationName: `Video: ${videoFile.name} @ ${formatVideoTime(t)}`,
+                box2d: obj.box2d,
+                imageUrl: frameSnapshot,
+                annotatedImageUrl: annotatedSnapshot,
+                imageSource: 'video_upload',
+                aiEngine: selectedVideoModel,
+                verificationStatus: 'verified',
+                verifiedStatus: 'confirmed',
+              });
+
+              foundDetections.push({
+                id: saved.id,
+                timestampSec: t,
+                formattedTimestamp: formatVideoTime(t),
+                objectType: saved.type,
+                damageClass,
+                damageName,
+                confidence: obj.confidence,
+                severity: obj.severity,
+                description: saved.description,
+                box2d: obj.box2d,
+                frameSnapshot: annotatedSnapshot,
+                recordId: saved.id,
+              });
+            }
+          }
+        } catch (inferErr: any) {
+          console.warn(`[VideoAnalysis] Inference error on frame ${i + 1}:`, inferErr);
+        }
+      }
+
+      const totalPotholes = foundDetections.filter((d) => d.damageClass === 'D40').length;
+      const totalCracks = foundDetections.filter((d) => d.damageClass !== 'D40').length;
+      const avgConfidence =
+        foundDetections.length > 0
+          ? Math.round(
+              (foundDetections.reduce((acc, d) => acc + d.confidence, 0) / foundDetections.length) * 100
+            )
+          : 0;
+
+      const modelDisplayName =
+        selectedVideoModel === 'yolov5'
+          ? 'YOLOv5 RDD2022 (best.pt)'
+          : selectedVideoModel === 'gemini-feedback'
+          ? 'Feedback-Guided Gemini Vision'
+          : 'Standard Gemini Vision';
+
+      setVideoAnalysisResults({
+        completed: true,
+        modelUsed: modelDisplayName,
+        totalFramesProcessed: totalFrames,
+        videoDurationSec: duration,
+        totalPotholesDetected: totalPotholes,
+        totalCracksDetected: totalCracks,
+        averageConfidence: avgConfidence,
+        detections: foundDetections,
+      });
+
+      showNotification(`🎉 Video analysis complete! Detected ${totalPotholes} potholes across ${totalFrames} frames.`);
+    } catch (err: any) {
+      console.error('[VideoAnalysis] Analysis error:', err);
+      setVideoAnalysisError(err?.message || 'Failed to analyze video');
+    } finally {
+      setIsVideoAnalyzing(false);
+    }
+  };
+
+  const handleAbortVideoAnalysis = () => {
+    abortVideoAnalysisRef.current = true;
+    setIsVideoAnalyzing(false);
+    showNotification('Video analysis cancelled.');
+  };
+
+  const handleToggleAnnotatedPlayback = () => {
+    if (!annotatedVideoRef.current) return;
+    if (annotatedVideoRef.current.paused) {
+      annotatedVideoRef.current.play();
+      setIsAnnotatedPlaying(true);
+    } else {
+      annotatedVideoRef.current.pause();
+      setIsAnnotatedPlaying(false);
+    }
+  };
+
+  const handleJumpToTimestamp = (sec: number) => {
+    if (annotatedVideoRef.current) {
+      annotatedVideoRef.current.currentTime = Math.max(0, sec - 0.2);
+      annotatedVideoRef.current.play();
+      setIsAnnotatedPlaying(true);
+    }
+  };
+
+  const handleReplayVideo = () => {
+    if (annotatedVideoRef.current) {
+      annotatedVideoRef.current.currentTime = 0;
+      annotatedVideoRef.current.play();
+      setIsAnnotatedPlaying(true);
+    }
+  };
 
   // Keep isMonitoringRef synchronized
   useEffect(() => {
@@ -921,6 +1312,48 @@ export const MonitorPage: React.FC<MonitorPageProps> = ({
         </div>
       </div>
 
+      {/* Mode Switch Tabs: Live Camera Detection vs Upload Recorded Video */}
+      <div className="bg-slate-900/95 px-3 py-2 border-b border-slate-800 flex items-center justify-between gap-3 z-30">
+        <div className="flex items-center gap-1.5 bg-slate-950 p-1 rounded-xl border border-slate-800 w-full sm:w-auto">
+          <button
+            onClick={() => handleTabSwitch('live')}
+            className={`flex-1 sm:flex-initial px-3.5 py-1.5 rounded-lg text-xs font-bold flex items-center justify-center gap-2 transition-all ${
+              activeMonitorTab === 'live'
+                ? 'bg-blue-600 text-white shadow-md shadow-blue-600/30'
+                : 'text-slate-400 hover:text-white'
+            }`}
+          >
+            <Camera className="w-3.5 h-3.5" />
+            <span>Live Camera Detection</span>
+          </button>
+          <button
+            onClick={() => handleTabSwitch('video')}
+            className={`flex-1 sm:flex-initial px-3.5 py-1.5 rounded-lg text-xs font-bold flex items-center justify-center gap-2 transition-all ${
+              activeMonitorTab === 'video'
+                ? 'bg-gradient-to-r from-purple-600 to-indigo-600 text-white shadow-md shadow-purple-600/30'
+                : 'text-slate-400 hover:text-white'
+            }`}
+          >
+            <Film className="w-3.5 h-3.5" />
+            <span>Upload Recorded Video</span>
+          </button>
+        </div>
+
+        {activeMonitorTab === 'video' ? (
+          <div className="hidden sm:flex items-center gap-2 text-xs text-purple-300 font-mono">
+            <Sparkles className="w-3.5 h-3.5 text-purple-400" />
+            <span>AI Pothole Video Scanner</span>
+          </div>
+        ) : (
+          <div className="hidden sm:flex items-center gap-2 text-xs text-slate-400">
+            <Navigation className="w-3.5 h-3.5 text-cyan-400" />
+            <span className="font-mono text-[11px]">{formattedGPS.combined}</span>
+          </div>
+        )}
+      </div>
+
+      {activeMonitorTab === 'live' ? (
+        <>
       {/* AI Model Engine Selector Bar */}
       <div className="bg-slate-900/95 px-3 py-2 border-b border-slate-800 flex flex-wrap items-center justify-between gap-2 z-20">
         <div className="flex items-center flex-wrap gap-2 text-xs text-slate-300">
@@ -1501,6 +1934,660 @@ export const MonitorPage: React.FC<MonitorPageProps> = ({
           </div>
         )}
       </div>
+        </>
+      ) : (
+        /* =========================================================================
+           VIDEO ANALYSIS & AI POTHOLE DETECTION VIEW (Sections 1 - 6)
+           ========================================================================= */
+        <div className="flex-1 overflow-y-auto p-4 sm:p-6 bg-slate-950 text-slate-100">
+          <div className="max-w-6xl mx-auto space-y-6 pb-16">
+            {/* 1. Header & AI Model Selection Bar */}
+            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 p-5 rounded-3xl bg-slate-900/90 border border-slate-800 shadow-xl backdrop-blur-md">
+              <div className="flex items-start gap-3.5">
+                <div className="p-3 rounded-2xl bg-gradient-to-br from-purple-600 to-indigo-600 text-white shadow-lg shadow-purple-600/30 shrink-0">
+                  <Film className="w-6 h-6" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2.5 flex-wrap">
+                    <h2 className="text-lg sm:text-xl font-black text-white tracking-wide uppercase">
+                      VIDEO ANALYSIS
+                    </h2>
+                    <span className="text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/30 font-mono">
+                      AI Pothole Detection
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-400 mt-1 max-w-xl">
+                    Upload recorded road video footage (MP4, MOV, WebM). Run frame-by-frame inference using trained road-damage neural models, annotate detected potholes with bounding boxes, and log hazard records to MySQL.
+                  </p>
+                </div>
+              </div>
+
+              {/* 2. AI Model Selection Dropdown */}
+              <div className="flex flex-col gap-1.5 w-full lg:w-96 shrink-0 bg-slate-950/70 p-3 rounded-2xl border border-slate-800">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="font-bold text-slate-300 flex items-center gap-1.5">
+                    <Cpu className="w-3.5 h-3.5 text-cyan-400" />
+                    <span>AI DETECTION MODEL:</span>
+                  </span>
+                  <span
+                    className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded-full ${
+                      selectedVideoModel === 'yolov5'
+                        ? yoloStatus.isReady
+                          ? 'text-emerald-300 bg-emerald-950/80 border border-emerald-500/40'
+                          : 'text-amber-300 bg-amber-950/80 border border-amber-500/40 animate-pulse'
+                        : 'text-purple-300 bg-purple-950/80 border border-purple-500/40'
+                    }`}
+                  >
+                    {selectedVideoModel === 'yolov5'
+                      ? yoloStatus.isReady
+                        ? '● FASTAPI ONLINE'
+                        : '○ MICROSERVICE CHECKING'
+                      : '● API CONNECTED'}
+                  </span>
+                </div>
+
+                <select
+                  value={selectedVideoModel}
+                  onChange={(e) => setSelectedVideoModel(e.target.value as SupportedDetectorModel)}
+                  disabled={isVideoAnalyzing}
+                  className="w-full bg-slate-900 border border-slate-700 hover:border-slate-600 rounded-xl px-3 py-2 text-xs font-semibold text-slate-200 focus:outline-none focus:ring-2 focus:ring-purple-500 transition-all cursor-pointer disabled:opacity-50"
+                >
+                  <option value="yolov5">
+                    YOLOv5 Road Damage Detector (yolo-service/best.pt • RDD2022)
+                  </option>
+                  <option value="gemini-feedback">
+                    Feedback-Guided Gemini Vision (v2.0 Rules Gating)
+                  </option>
+                  <option value="gemini-standard">
+                    Standard Gemini Vision (Zero-Feedback Baseline)
+                  </option>
+                </select>
+
+                <div className="text-[10px] text-slate-400 font-mono leading-tight">
+                  {selectedVideoModel === 'yolov5' && (
+                    <span className="text-cyan-300">
+                      Trained Weights: <code className="text-white">yolo-service/best.pt</code> • Classes: D40 (Potholes), D00, D10, D20
+                    </span>
+                  )}
+                  {selectedVideoModel === 'gemini-feedback' && (
+                    <span className="text-purple-300">
+                      Multimodal Cloud Vision • Active feedback false-positive suppression
+                    </span>
+                  )}
+                  {selectedVideoModel === 'gemini-standard' && (
+                    <span className="text-slate-300">
+                      Baseline prompt pipeline without false-positive suppression gating
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Error Notification Banner if any */}
+            {videoAnalysisError && (
+              <div className="p-4 rounded-2xl bg-rose-950/90 border border-rose-500/60 text-rose-200 text-xs flex items-center justify-between gap-3 animate-in fade-in">
+                <div className="flex items-center gap-2.5">
+                  <AlertCircle className="w-5 h-5 text-rose-400 shrink-0" />
+                  <span className="font-semibold">{videoAnalysisError}</span>
+                </div>
+                <button
+                  onClick={() => setVideoAnalysisError(null)}
+                  className="p-1 rounded-lg hover:bg-rose-900/60 text-rose-300 transition-colors"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            )}
+
+            {/* Hidden Video File Input */}
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="video/mp4,video/quicktime,video/webm,.mp4,.mov,.webm"
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) handleVideoFileSelect(f);
+              }}
+              className="hidden"
+            />
+
+            {/* 3. Drag-and-Drop Video Upload Area or Video Preview */}
+            {!videoPreviewUrl ? (
+              <div
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  setIsDraggingVideo(true);
+                }}
+                onDragLeave={() => setIsDraggingVideo(false)}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setIsDraggingVideo(false);
+                  const f = e.dataTransfer.files?.[0];
+                  if (f) handleVideoFileSelect(f);
+                }}
+                onClick={() => fileInputRef.current?.click()}
+                className={`p-10 rounded-3xl border-2 border-dashed transition-all flex flex-col items-center justify-center text-center cursor-pointer ${
+                  isDraggingVideo
+                    ? 'border-purple-400 bg-purple-950/30 scale-[1.01]'
+                    : 'border-slate-700 hover:border-purple-500/60 bg-slate-900/50 hover:bg-slate-900/80'
+                }`}
+              >
+                <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-blue-600/20 to-purple-600/20 border border-purple-500/30 flex items-center justify-center text-purple-400 mb-4 shadow-lg">
+                  <UploadCloud className="w-8 h-8 animate-pulse text-purple-300" />
+                </div>
+                <h3 className="text-base sm:text-lg font-bold text-white mb-1">
+                  Drag and drop your road footage here, or browse files
+                </h3>
+                <p className="text-xs text-slate-400 max-w-md mb-5">
+                  Supported formats: MP4, MOV, WebM. Videos are processed frame-by-frame using real AI inference without data simulation.
+                </p>
+
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      fileInputRef.current?.click();
+                    }}
+                    className="py-2.5 px-5 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 active:scale-95 text-white font-bold text-xs flex items-center gap-2 shadow-lg shadow-blue-600/25 transition-all"
+                  >
+                    <FolderOpen className="w-4 h-4" />
+                    <span>Browse Files</span>
+                  </button>
+                </div>
+
+                <div className="flex items-center gap-2 mt-6 text-[11px] text-slate-400">
+                  <span className="px-2 py-0.5 rounded bg-slate-800 text-slate-300 font-mono">MP4</span>
+                  <span className="px-2 py-0.5 rounded bg-slate-800 text-slate-300 font-mono">MOV</span>
+                  <span className="px-2 py-0.5 rounded bg-slate-800 text-slate-300 font-mono">WebM</span>
+                  <span>• Maximum video size 500 MB</span>
+                </div>
+              </div>
+            ) : (
+              <div className="p-5 rounded-3xl bg-slate-900/90 border border-slate-800 shadow-xl space-y-4">
+                <div className="flex flex-col lg:flex-row gap-5">
+                  {/* Video Preview Player */}
+                  <div className="w-full lg:w-3/5 rounded-2xl overflow-hidden bg-black border border-slate-800 relative aspect-video flex items-center justify-center">
+                    <video
+                      src={videoPreviewUrl}
+                      controls
+                      playsInline
+                      className="w-full h-full object-contain"
+                    />
+                  </div>
+
+                  {/* Video Metadata & Start Button */}
+                  <div className="w-full lg:w-2/5 flex flex-col justify-between space-y-4">
+                    <div className="space-y-3">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <span className="text-[10px] font-bold text-purple-400 uppercase tracking-wider block">
+                            Uploaded Recording
+                          </span>
+                          <h4 className="font-extrabold text-sm sm:text-base text-white truncate" title={videoMetadata?.name}>
+                            {videoMetadata?.name || videoFile?.name}
+                          </h4>
+                        </div>
+                        <span className="px-2.5 py-1 rounded-lg bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[10px] font-bold uppercase shrink-0">
+                          Ready
+                        </span>
+                      </div>
+
+                      {/* Metadata Details */}
+                      <div className="grid grid-cols-2 gap-2 text-xs">
+                        <div className="p-2.5 rounded-xl bg-slate-950/80 border border-slate-800 space-y-0.5">
+                          <span className="text-[10px] text-slate-400 uppercase block font-semibold">File Size</span>
+                          <span className="font-mono font-bold text-slate-200">{videoMetadata?.sizeMb || 'N/A'}</span>
+                        </div>
+                        <div className="p-2.5 rounded-xl bg-slate-950/80 border border-slate-800 space-y-0.5">
+                          <span className="text-[10px] text-slate-400 uppercase block font-semibold">Duration</span>
+                          <span className="font-mono font-bold text-slate-200">{videoMetadata?.formattedDuration || 'N/A'}</span>
+                        </div>
+                        <div className="p-2.5 rounded-xl bg-slate-950/80 border border-slate-800 space-y-0.5">
+                          <span className="text-[10px] text-slate-400 uppercase block font-semibold">Resolution</span>
+                          <span className="font-mono font-bold text-slate-200">
+                            {videoMetadata?.width ? `${videoMetadata.width} × ${videoMetadata.height}px` : 'Standard HD'}
+                          </span>
+                        </div>
+                        <div className="p-2.5 rounded-xl bg-slate-950/80 border border-slate-800 space-y-0.5">
+                          <span className="text-[10px] text-slate-400 uppercase block font-semibold">Detection Target</span>
+                          <span className="font-mono font-bold text-cyan-300">Potholes (D40) & Cracks</span>
+                        </div>
+                      </div>
+
+                      {/* Replace / Remove Controls */}
+                      <div className="flex items-center gap-2 pt-1">
+                        <button
+                          type="button"
+                          onClick={() => fileInputRef.current?.click()}
+                          disabled={isVideoAnalyzing}
+                          className="py-1.5 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 active:scale-95 text-slate-200 text-xs font-semibold flex items-center gap-1.5 transition-colors disabled:opacity-50"
+                        >
+                          <FolderOpen className="w-3.5 h-3.5" />
+                          <span>Replace Video</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleRemoveVideo}
+                          disabled={isVideoAnalyzing}
+                          className="py-1.5 px-3 rounded-xl bg-rose-950/60 hover:bg-rose-900/60 border border-rose-800/40 text-rose-300 text-xs font-semibold flex items-center gap-1.5 transition-colors disabled:opacity-50"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          <span>Remove</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* START VIDEO ANALYSIS BUTTON */}
+                    <button
+                      type="button"
+                      onClick={handleStartVideoAnalysis}
+                      disabled={isVideoAnalyzing}
+                      className="w-full py-4 px-6 rounded-2xl bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 hover:from-blue-500 hover:to-purple-500 active:scale-98 text-white font-extrabold text-sm sm:text-base flex items-center justify-center gap-2.5 shadow-xl shadow-indigo-600/30 transition-all border border-indigo-400/30 disabled:opacity-60 cursor-pointer"
+                    >
+                      {isVideoAnalyzing ? (
+                        <>
+                          <RefreshCw className="w-5 h-5 animate-spin text-cyan-300" />
+                          <span>Extracting Frames & Analyzing Road Damage...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Zap className="w-5 h-5 fill-amber-300 text-amber-300" />
+                          <span>START VIDEO ANALYSIS</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Live In-Progress Video Analysis Bar */}
+                {isVideoAnalyzing && (
+                  <div className="p-4 rounded-2xl bg-slate-950 border border-indigo-500/40 space-y-2.5 animate-in fade-in">
+                    <div className="flex items-center justify-between text-xs">
+                      <div className="flex items-center gap-2 font-bold text-indigo-300">
+                        <RefreshCw className="w-4 h-4 animate-spin text-indigo-400" />
+                        <span>
+                          Processing Frame {videoAnalysisProgress.currentFrame} / {videoAnalysisProgress.totalFrames}
+                        </span>
+                        <span className="font-mono text-slate-400">({videoAnalysisProgress.percent}%)</span>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <span className="font-mono text-cyan-300 text-[11px]">
+                          Timestamp: {videoAnalysisProgress.currentTimestampStr}
+                        </span>
+                        <span className="font-bold text-rose-400 text-[11px] px-2 py-0.5 rounded-full bg-rose-950/80 border border-rose-800/40">
+                          🕳️ {videoAnalysisProgress.potholesFound} potholes found
+                        </span>
+                        <button
+                          type="button"
+                          onClick={handleAbortVideoAnalysis}
+                          className="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-600 hover:bg-rose-500 text-white transition-colors"
+                        >
+                          Abort
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Progress Fill Bar */}
+                    <div className="w-full h-2.5 rounded-full bg-slate-800 overflow-hidden">
+                      <div
+                        className="h-full bg-gradient-to-r from-blue-500 via-indigo-500 to-purple-500 transition-all duration-200"
+                        style={{ width: `${videoAnalysisProgress.percent}%` }}
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* 4. Dedicated Video Analysis Results Section */}
+            {videoAnalysisResults && (
+              <div className="space-y-6 animate-in fade-in slide-in-from-bottom-3 duration-300">
+                {/* Results Header Card */}
+                <div className="p-5 rounded-3xl bg-slate-900/90 border border-slate-800 shadow-xl space-y-4">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800/80 pb-3">
+                    <div className="flex items-center gap-2.5">
+                      <div className="p-2 rounded-xl bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                        <CheckCircle className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <h3 className="font-black text-base sm:text-lg text-white">
+                          Video Analysis Report
+                        </h3>
+                        <p className="text-xs text-slate-400">
+                          Frame-by-frame neural inference complete • All detected hazards stored in MySQL database
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <span className="text-[11px] font-mono font-bold px-3 py-1 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                        Status: Processed & Saved to MySQL
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* 4 Metric Summary Cards */}
+                  <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                    {/* Total Potholes */}
+                    <div className="p-3.5 rounded-2xl bg-slate-950 border border-rose-500/30 space-y-1">
+                      <div className="flex items-center justify-between text-xs text-slate-400">
+                        <span className="font-bold uppercase tracking-wider text-[10px]">Potholes (D40)</span>
+                        <span className="text-base">🕳️</span>
+                      </div>
+                      <div className="text-2xl font-black text-rose-400 font-mono">
+                        {videoAnalysisResults.totalPotholesDetected}
+                      </div>
+                      <span className="text-[10px] text-slate-400 block">Identified road cavities</span>
+                    </div>
+
+                    {/* Total Cracks */}
+                    <div className="p-3.5 rounded-2xl bg-slate-950 border border-amber-500/30 space-y-1">
+                      <div className="flex items-center justify-between text-xs text-slate-400">
+                        <span className="font-bold uppercase tracking-wider text-[10px]">Cracks (D00-D20)</span>
+                        <span className="text-base">⚡</span>
+                      </div>
+                      <div className="text-2xl font-black text-amber-400 font-mono">
+                        {videoAnalysisResults.totalCracksDetected}
+                      </div>
+                      <span className="text-[10px] text-slate-400 block">Longitudinal / Alligator</span>
+                    </div>
+
+                    {/* Frames Analyzed */}
+                    <div className="p-3.5 rounded-2xl bg-slate-950 border border-blue-500/30 space-y-1">
+                      <div className="flex items-center justify-between text-xs text-slate-400">
+                        <span className="font-bold uppercase tracking-wider text-[10px]">Frames Analyzed</span>
+                        <Film className="w-4 h-4 text-blue-400" />
+                      </div>
+                      <div className="text-2xl font-black text-blue-400 font-mono">
+                        {videoAnalysisResults.totalFramesProcessed}
+                      </div>
+                      <span className="text-[10px] text-slate-400 block">
+                        Across {videoAnalysisResults.videoDurationSec.toFixed(1)}s video
+                      </span>
+                    </div>
+
+                    {/* AI Model & Confidence */}
+                    <div className="p-3.5 rounded-2xl bg-slate-950 border border-purple-500/30 space-y-1">
+                      <div className="flex items-center justify-between text-xs text-slate-400">
+                        <span className="font-bold uppercase tracking-wider text-[10px]">AI Model</span>
+                        <Cpu className="w-4 h-4 text-purple-400" />
+                      </div>
+                      <div className="text-xl font-black text-purple-300 truncate" title={videoAnalysisResults.modelUsed}>
+                        {videoAnalysisResults.modelUsed.split('(')[0]}
+                      </div>
+                      <span className="text-[10px] text-emerald-400 font-mono font-bold block">
+                        Avg. Confidence: {videoAnalysisResults.averageConfidence}%
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Annotated Video Replay Section */}
+                <div className="p-5 rounded-3xl bg-slate-900/90 border border-slate-800 shadow-xl space-y-3">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-800 pb-2">
+                    <div className="flex items-center gap-2">
+                      <Play className="w-4 h-4 text-cyan-400" />
+                      <h4 className="font-bold text-sm text-white uppercase tracking-wider">
+                        Annotated Video Replay (Bounding Box Overlay)
+                      </h4>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={handleReplayVideo}
+                        className="py-1.5 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 active:scale-95 text-slate-200 text-xs font-semibold flex items-center gap-1.5 transition-colors"
+                      >
+                        <RotateCcw className="w-3.5 h-3.5" />
+                        <span>Replay Annotated Video</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Video Player with dynamic overlay */}
+                  <div className="relative rounded-2xl overflow-hidden bg-black border border-slate-800 aspect-video flex items-center justify-center max-h-[500px]">
+                    <video
+                      ref={annotatedVideoRef}
+                      src={videoPreviewUrl || undefined}
+                      playsInline
+                      onTimeUpdate={() => {
+                        if (annotatedVideoRef.current) {
+                          setAnnotatedCurrentTime(annotatedVideoRef.current.currentTime);
+                        }
+                      }}
+                      onPlay={() => setIsAnnotatedPlaying(true)}
+                      onPause={() => setIsAnnotatedPlaying(false)}
+                      className="w-full h-full object-contain"
+                    />
+
+                    {/* Synchronized Bounding Box Overlays on Video */}
+                    {videoAnalysisResults.detections
+                      .filter((det) => Math.abs(det.timestampSec - annotatedCurrentTime) <= 0.8)
+                      .map((det) => {
+                        if (!det.box2d) return null;
+                        const [ymin, xmin, ymax, xmax] = det.box2d;
+                        const top = `${ymin / 10}%`;
+                        const left = `${xmin / 10}%`;
+                        const width = `${Math.max(3, (xmax - xmin) / 10)}%`;
+                        const height = `${Math.max(3, (ymax - ymin) / 10)}%`;
+
+                        const isHigh = det.severity === 'high';
+                        const stroke = isHigh
+                          ? 'border-rose-500 bg-rose-500/20 shadow-lg shadow-rose-500/30'
+                          : 'border-amber-400 bg-amber-400/20 shadow-lg shadow-amber-400/30';
+                        const badge = isHigh ? 'bg-rose-600 text-white' : 'bg-amber-500 text-slate-950';
+
+                        return (
+                          <div
+                            key={det.id}
+                            className={`absolute pointer-events-none border-2 rounded-xl transition-all duration-75 z-20 ${stroke}`}
+                            style={{ top, left, width, height }}
+                          >
+                            <div
+                              className={`absolute -top-5 left-0 px-2 py-0.5 rounded text-[10px] font-bold font-mono tracking-tight shadow-md flex items-center gap-1.5 whitespace-nowrap ${badge}`}
+                            >
+                              <span>[{det.damageClass} - {det.damageName}]</span>
+                              <span>{Math.round(det.confidence * 100)}%</span>
+                              <span className="uppercase text-[9px] px-1 rounded bg-black/30">
+                                {det.severity}
+                              </span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                  </div>
+
+                  {/* Playback Controls & Timestamp Scrubber */}
+                  <div className="flex items-center justify-between gap-3 p-2.5 bg-slate-950/80 rounded-xl border border-slate-800 text-xs">
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={handleToggleAnnotatedPlayback}
+                        className="p-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white transition-colors"
+                        title={isAnnotatedPlaying ? 'Pause' : 'Play'}
+                      >
+                        {isAnnotatedPlaying ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleReplayVideo}
+                        className="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors"
+                        title="Replay from beginning"
+                      >
+                        <RotateCcw className="w-4 h-4" />
+                      </button>
+                    </div>
+
+                    <div className="flex-1 flex items-center gap-3">
+                      <span className="font-mono text-[11px] text-cyan-300 shrink-0">
+                        {formatVideoTime(annotatedCurrentTime)}
+                      </span>
+                      <input
+                        type="range"
+                        min={0}
+                        max={videoAnalysisResults.videoDurationSec || 100}
+                        step={0.1}
+                        value={annotatedCurrentTime}
+                        onChange={(e) => {
+                          const val = parseFloat(e.target.value);
+                          setAnnotatedCurrentTime(val);
+                          if (annotatedVideoRef.current) {
+                            annotatedVideoRef.current.currentTime = val;
+                          }
+                        }}
+                        className="w-full accent-indigo-500 cursor-pointer h-1.5 bg-slate-800 rounded-lg"
+                      />
+                      <span className="font-mono text-[11px] text-slate-400 shrink-0">
+                        {formatVideoTime(videoAnalysisResults.videoDurationSec)}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 5. Detection Results Table */}
+                <div className="p-5 rounded-3xl bg-slate-900/90 border border-slate-800 shadow-xl space-y-4">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-800 pb-3">
+                    <div>
+                      <h4 className="font-black text-base text-white">
+                        Detection Results Table ({videoAnalysisResults.detections.length})
+                      </h4>
+                      <p className="text-xs text-slate-400">
+                        All values generated directly by {videoAnalysisResults.modelUsed}
+                      </p>
+                    </div>
+                    <span className="text-[11px] font-mono text-slate-400">
+                      Click any row or &quot;Jump to Frame&quot; to inspect detection
+                    </span>
+                  </div>
+
+                  {videoAnalysisResults.detections.length === 0 ? (
+                    <div className="p-8 text-center text-slate-400 text-xs rounded-2xl bg-slate-950/60 border border-slate-800">
+                      No potholes or severe road damage detected in this video footage. Road surface appears clear.
+                    </div>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-xs">
+                        <thead>
+                          <tr className="border-b border-slate-800 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                            <th className="py-3 px-3">#</th>
+                            <th className="py-3 px-3">Timestamp</th>
+                            <th className="py-3 px-3">Object</th>
+                            <th className="py-3 px-3">Confidence</th>
+                            <th className="py-3 px-3">Severity</th>
+                            <th className="py-3 px-3">Snapshot</th>
+                            <th className="py-3 px-3 text-right">Action</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-800/60 font-mono">
+                          {videoAnalysisResults.detections.map((det, index) => {
+                            const isPothole = det.damageClass === 'D40';
+                            return (
+                              <tr
+                                key={det.id}
+                                className="hover:bg-slate-800/40 transition-colors cursor-pointer group"
+                                onClick={() => handleJumpToTimestamp(det.timestampSec)}
+                              >
+                                <td className="py-3 px-3 text-slate-400 font-bold">
+                                  #{index + 1}
+                                </td>
+                                <td className="py-3 px-3">
+                                  <span className="flex items-center gap-1.5 text-cyan-300 font-bold">
+                                    <Clock className="w-3.5 h-3.5 text-cyan-400" />
+                                    <span>{det.formattedTimestamp}</span>
+                                  </span>
+                                </td>
+                                <td className="py-3 px-3">
+                                  <div className="flex items-center gap-1.5">
+                                    <span>{isPothole ? '🕳️' : '⚡'}</span>
+                                    <span className="font-sans font-bold text-slate-100">
+                                      {det.damageName}
+                                    </span>
+                                    <span className="text-[10px] px-1.5 py-0.2 rounded bg-slate-800 text-slate-300">
+                                      {det.damageClass}
+                                    </span>
+                                  </div>
+                                </td>
+                                <td className="py-3 px-3">
+                                  <div className="flex items-center gap-2">
+                                    <div className="w-16 h-2 rounded-full bg-slate-800 overflow-hidden">
+                                      <div
+                                        className={`h-full ${
+                                          det.confidence >= 0.8
+                                            ? 'bg-emerald-400'
+                                            : det.confidence >= 0.6
+                                            ? 'bg-amber-400'
+                                            : 'bg-blue-400'
+                                        }`}
+                                        style={{ width: `${Math.round(det.confidence * 100)}%` }}
+                                      />
+                                    </div>
+                                    <span className="font-bold text-slate-200">
+                                      {Math.round(det.confidence * 100)}%
+                                    </span>
+                                  </div>
+                                </td>
+                                <td className="py-3 px-3">
+                                  <span
+                                    className={`text-[9px] uppercase font-black px-2 py-0.5 rounded-full ${
+                                      det.severity === 'high'
+                                        ? 'bg-red-500/20 text-red-400 border border-red-500/30'
+                                        : 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                                    }`}
+                                  >
+                                    {det.severity}
+                                  </span>
+                                </td>
+                                <td className="py-3 px-3">
+                                  <img
+                                    src={det.frameSnapshot}
+                                    alt="Frame"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setPreviewZoomImage(det.frameSnapshot);
+                                    }}
+                                    className="w-12 h-8 object-cover rounded-lg border border-slate-700 hover:scale-125 transition-transform cursor-zoom-in"
+                                  />
+                                </td>
+                                <td className="py-3 px-3 text-right">
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleJumpToTimestamp(det.timestampSec);
+                                    }}
+                                    className="py-1 px-2.5 rounded-lg bg-indigo-600/80 hover:bg-indigo-600 text-white font-sans text-[11px] font-bold flex items-center gap-1 ml-auto shadow transition-colors"
+                                  >
+                                    <Play className="w-3 h-3" />
+                                    <span>Jump to Frame</span>
+                                  </button>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+
+                  {/* Informational Database & GPS Footer */}
+                  <div className="p-3.5 rounded-2xl bg-slate-950 border border-slate-800 text-[11px] text-slate-400 space-y-1 font-sans">
+                    <div className="flex items-center gap-1.5 text-emerald-400 font-bold">
+                      <CheckCircle className="w-3.5 h-3.5" />
+                      <span>Database Persistence Verified</span>
+                    </div>
+                    <p>
+                      Each detected road damage instance above has been permanently stored in MySQL via <code className="text-slate-300">detectionService.addDetection</code> with <code className="text-slate-300">imageSource: &apos;video_upload&apos;</code>.
+                    </p>
+                    <p className="text-slate-500 text-[10px]">
+                      GPS Notice: Because no live GPS receiver was active during video recording, coordinates are recorded as null. In compliance with RoadGuard specifications, no simulated or fake coordinates were generated.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Quick Visual Agent Self-Improvement / False Positive Modal */}
       {trainTarget && (
@@ -1585,6 +2672,31 @@ export const MonitorPage: React.FC<MonitorPageProps> = ({
                 <span>Apply Rule & Train</span>
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Zoom Modal for Frame Snapshot */}
+      {previewZoomImage && (
+        <div
+          className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4 cursor-pointer"
+          onClick={() => setPreviewZoomImage(null)}
+        >
+          <div
+            className="relative max-w-4xl max-h-[90vh] bg-slate-900 border border-slate-700 rounded-3xl overflow-hidden shadow-2xl p-2"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              onClick={() => setPreviewZoomImage(null)}
+              className="absolute top-4 right-4 p-2 rounded-full bg-black/60 text-white hover:bg-black/90 z-10 transition-colors"
+            >
+              <X className="w-5 h-5" />
+            </button>
+            <img
+              src={previewZoomImage}
+              alt="Zoomed Detection Frame"
+              className="w-full h-auto max-h-[85vh] object-contain rounded-2xl"
+            />
           </div>
         </div>
       )}

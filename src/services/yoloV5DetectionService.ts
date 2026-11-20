@@ -88,12 +88,8 @@ export class YOLOv5DetectionService implements IAIDetectionService {
     if (this.isChecking) return this.status === 'ready';
     this.isChecking = true;
     try {
-      // First try via Express proxy
-      let res = await fetch(`${this.serviceUrl}/detect`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ imageBase64: 'data:image/jpeg;base64,/9j/4AAQSkZJRg==' }),
-      }).catch(() => null);
+      // First try via Express proxy /api/yolov5/health
+      let res = await fetch(`${this.serviceUrl}/health`).catch(() => null);
 
       if (!res || !res.ok) {
         // Fallback check directly to localhost:8000

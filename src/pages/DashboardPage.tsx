@@ -85,7 +85,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
   const potholePercent = stats.total > 0 ? Math.round((stats.potholes / stats.total) * 100) : 0;
   const highSeverityPercent = stats.total > 0 ? Math.round((stats.highSeverity / stats.total) * 100) : 0;
   const crackPercent = stats.total > 0 ? Math.round((stats.roadCracks / stats.total) * 100) : 0;
-  const signPercent = stats.total > 0 ? Math.round((stats.brokenSigns / stats.total) * 100) : 0;
+  const moderatePercent = stats.total > 0 ? Math.max(0, 100 - highSeverityPercent) : 0;
 
   const getSeverityBadge = (severity: string) => {
     switch (severity) {
@@ -445,20 +445,22 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                 </div>
               </div>
 
-              {/* Signs Bar */}
+              {/* Moderate & Low Severity Bar */}
               <div>
                 <div className="flex justify-between text-xs mb-1.5">
                   <span className="font-semibold text-slate-700 flex items-center gap-1">
-                    🛑 Broken Signs
+                    🟢 Moderate & Minor Wear
                   </span>
-                  <span className="font-mono text-slate-500">{stats.brokenSigns} ({signPercent}%)</span>
+                  <span className="font-mono text-slate-500">
+                    {Math.max(0, stats.total - stats.highSeverity)} ({moderatePercent}%)
+                  </span>
                 </div>
                 <div className="w-full bg-slate-100 h-2.5 rounded-full overflow-hidden">
                   <motion.div
                     initial={{ width: 0 }}
-                    animate={{ width: `${Math.max(stats.brokenSigns > 0 ? 5 : 0, signPercent)}%` }}
+                    animate={{ width: `${Math.max(stats.total > stats.highSeverity ? 5 : 0, moderatePercent)}%` }}
                     transition={progressBarTransition}
-                    className="bg-purple-500 h-full rounded-full"
+                    className="bg-emerald-500 h-full rounded-full"
                   />
                 </div>
               </div>

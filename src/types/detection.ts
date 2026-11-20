@@ -27,7 +27,7 @@ export interface DetectionResult {
 
 export type HazardVerificationStatus = 'unverified' | 'confirmed' | 'disputed';
 export type VerificationStatusType = 'pending' | 'verified' | 'rejected';
-export type ImageSourceType = 'live_camera' | 'manual_upload';
+export type ImageSourceType = 'live_camera' | 'manual_upload' | 'video_upload';
 export type AIEngineType =
   | 'yolov5'
   | 'gemini-feedback'

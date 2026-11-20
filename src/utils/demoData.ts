@@ -213,23 +213,16 @@ export function createSampleRoadCanvas(type: 'pothole' | 'crack' | 'broken_sign'
     ctx.lineTo(340, 230);
     ctx.stroke();
   } else if (type === 'broken_sign') {
-    ctx.save();
-    ctx.translate(470, 250);
-    ctx.rotate(0.28);
-    ctx.fillStyle = '#64748b';
-    ctx.fillRect(-4, 0, 8, 140);
-    ctx.fillStyle = '#e2e8f0';
-    ctx.strokeStyle = '#dc2626';
-    ctx.lineWidth = 6;
+    // Interconnected alligator fatigue mesh crack (D20)
+    ctx.strokeStyle = '#090a0b';
+    ctx.lineWidth = 3;
+    ctx.lineCap = 'round';
     ctx.beginPath();
-    ctx.roundRect(-28, -60, 56, 60, 8);
-    ctx.fill();
+    ctx.moveTo(250, 420); ctx.lineTo(290, 400); ctx.lineTo(330, 420); ctx.lineTo(370, 390);
+    ctx.moveTo(280, 430); ctx.lineTo(310, 390); ctx.lineTo(350, 410);
+    ctx.moveTo(290, 400); ctx.lineTo(295, 360); ctx.lineTo(330, 370); ctx.lineTo(360, 350);
+    ctx.moveTo(330, 420); ctx.lineTo(340, 380); ctx.lineTo(380, 400);
     ctx.stroke();
-    ctx.fillStyle = '#0f172a';
-    ctx.font = 'bold 22px sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText('45', 0, -20);
-    ctx.restore();
   }
 
   return canvas.toDataURL('image/jpeg', 0.88);
@@ -257,20 +250,20 @@ export const DEMO_SAMPLES: DemoSample[] = [
   },
   {
     id: 'sample-crack',
-    name: 'Fatigue Surface Crack',
+    name: 'Longitudinal Surface Crack',
     category: 'crack',
-    badge: 'Road Crack (D00)',
-    expectedHazard: 'Longitudinal road cracking',
+    badge: 'Longitudinal Crack (D00)',
+    expectedHazard: 'Longitudinal road cracking parallel to traffic',
     severity: 'medium',
     generateImage: () => createSampleRoadCanvas('crack'),
   },
   {
-    id: 'sample-sign',
-    name: 'Bent & Damaged Road Sign',
-    category: 'broken_sign',
-    badge: 'Broken Sign',
-    expectedHazard: 'Dented/tilted roadside warning sign',
-    severity: 'medium',
+    id: 'sample-alligator',
+    name: 'Alligator Fatigue Fracture',
+    category: 'crack',
+    badge: 'Alligator Crack (D20)',
+    expectedHazard: 'Severe interconnected alligator structural fatigue',
+    severity: 'high',
     generateImage: () => createSampleRoadCanvas('broken_sign'),
   },
   {

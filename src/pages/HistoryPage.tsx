@@ -467,40 +467,7 @@ export const HistoryPage: React.FC<HistoryPageProps> = ({
             }`}
           >
             <span>⚡</span>
-            <span>Cracks</span>
-          </button>
-          <button
-            onClick={() => setFilterType('broken_sign')}
-            className={`py-1.5 px-3 rounded-xl text-xs font-bold transition-all whitespace-nowrap flex items-center gap-1.5 ${
-              filterType === 'broken_sign'
-                ? 'bg-purple-600 text-white shadow-sm'
-                : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-            }`}
-          >
-            <span>🛑</span>
-            <span>Signs</span>
-          </button>
-          <button
-            onClick={() => setFilterType('other_hazard')}
-            className={`py-1.5 px-3 rounded-xl text-xs font-bold transition-all whitespace-nowrap flex items-center gap-1.5 ${
-              filterType === 'other_hazard'
-                ? 'bg-indigo-600 text-white shadow-sm'
-                : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-            }`}
-          >
-            <span>⚠️</span>
-            <span>Other</span>
-          </button>
-          <button
-            onClick={() => setFilterType('vehicle_speed')}
-            className={`py-1.5 px-3 rounded-xl text-xs font-bold transition-all whitespace-nowrap flex items-center gap-1.5 ${
-              filterType === 'vehicle_speed'
-                ? 'bg-blue-600 text-white shadow-sm'
-                : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-            }`}
-          >
-            <span>🏎️</span>
-            <span>Vehicles</span>
+            <span>Road Cracks (D00-D20)</span>
           </button>
         </div>
 

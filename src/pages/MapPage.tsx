@@ -417,15 +417,14 @@ export const MapPage: React.FC<MapPageProps> = ({
         {/* Center: Category Filters */}
         <div className="flex items-center gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800 text-xs overflow-x-auto">
           {[
-            { id: 'all' as const, label: 'All Hazards' },
-            { id: 'pothole' as const, label: '🕳️ Potholes' },
-            { id: 'road_crack' as const, label: '⚡ Road Cracks' },
-            { id: 'broken_sign' as const, label: '🛑 Signs / Other' },
+            { id: 'all' as const, label: 'All Road Damage' },
+            { id: 'pothole' as const, label: '🕳️ Potholes (D40)' },
+            { id: 'road_crack' as const, label: '⚡ Road Cracks (D00-D20)' },
           ].map((cat) => (
             <button
               key={cat.id}
               onClick={() => setActiveCategoryFilter(cat.id)}
-              className={`px-2.5 py-1 rounded-lg text-[11px] font-bold whitespace-nowrap transition-colors ${
+              className={`px-3 py-1 rounded-lg text-[11px] font-bold whitespace-nowrap transition-colors ${
                 activeCategoryFilter === cat.id
                   ? 'bg-blue-600 text-white shadow-sm'
                   : 'text-slate-400 hover:text-white'

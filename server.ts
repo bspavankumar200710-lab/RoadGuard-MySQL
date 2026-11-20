@@ -1303,6 +1303,39 @@ app.delete('/api/feedback/rules/:id', async (req, res) => {
 // ============================================================
 // YOLOV5 PYTHON SERVICE PROXY
 // ============================================================
+app.get('/api/yolov5/health', async (req, res) => {
+  const yoloServiceUrl = process.env.YOLO_SERVICE_URL || 'http://127.0.0.1:8000';
+  try {
+    const response = await fetch(`${yoloServiceUrl}/health`, { method: 'GET' });
+    if (response.ok) {
+      const data = await response.json();
+      return res.json(data);
+    }
+    return res.status(response.status).json({ status: 'offline', error: 'Service returned error' });
+  } catch (err: any) {
+    return res.status(503).json({
+      status: 'offline',
+      service: 'YOLOv5 Road Damage Detection Service',
+      modelLoaded: false,
+      error: `YOLOv5 Python service is offline: ${err?.message}`,
+    });
+  }
+});
+
+app.get('/api/yolov5/model-info', async (req, res) => {
+  const yoloServiceUrl = process.env.YOLO_SERVICE_URL || 'http://127.0.0.1:8000';
+  try {
+    const response = await fetch(`${yoloServiceUrl}/model-info`, { method: 'GET' });
+    if (response.ok) {
+      const data = await response.json();
+      return res.json(data);
+    }
+    return res.status(response.status).json({ error: 'Failed to retrieve model info' });
+  } catch (err: any) {
+    return res.status(503).json({ error: `YOLOv5 service offline: ${err?.message}` });
+  }
+});
+
 app.post('/api/yolov5/detect', async (req, res) => {
   const yoloServiceUrl = process.env.YOLO_SERVICE_URL || 'http://127.0.0.1:8000';
   try {
