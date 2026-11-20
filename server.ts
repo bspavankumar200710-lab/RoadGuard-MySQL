@@ -1306,6 +1306,36 @@ app.delete('/api/feedback/rules/:id', async (req, res) => {
 });
 
 // ============================================================
+// SYSTEM & DEPLOYMENT HEALTH CHECK
+// ============================================================
+app.get('/api/health', async (_req, res) => {
+  let dbStatus = 'disconnected';
+  let dbLatencyMs = 0;
+  const start = Date.now();
+  try {
+    await pool.query('SELECT 1');
+    dbStatus = 'connected';
+    dbLatencyMs = Date.now() - start;
+  } catch (err: any) {
+    dbStatus = 'error: ' + (err?.message || 'unknown');
+  }
+
+  return res.json({
+    status: 'online',
+    timestamp: new Date().toISOString(),
+    uptimeSeconds: Math.floor(process.uptime()),
+    database: {
+      status: dbStatus,
+      latencyMs: dbLatencyMs,
+    },
+    gemini: {
+      configured: Boolean(process.env.GEMINI_API_KEY),
+      model: 'gemini-3.1-flash-lite',
+    },
+  });
+});
+
+// ============================================================
 // YOLOV5 PYTHON SERVICE PROXY
 // ============================================================
 app.get('/api/yolov5/health', async (req, res) => {

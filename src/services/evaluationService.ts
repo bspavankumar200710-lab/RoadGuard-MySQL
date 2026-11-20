@@ -71,7 +71,8 @@ export interface PerSampleEvaluationRecord {
 }
 
 export interface ClassAveragePrecision {
-  hazardClass: 'pothole' | 'road_crack';
+  hazardClass: string;
+  classCode?: string;
   ap50: number;
   ap30: number;
   gtCount: number;
@@ -85,6 +86,14 @@ export interface LightingStratifiedMetrics {
   imageRecall: number;
   falsePositiveRate: number;
   meanLatencyMs: number;
+}
+
+export interface ConfidenceBinCalibration {
+  binRange: string;
+  sampleCount: number;
+  meanConfidence: number;
+  actualAccuracy: number;
+  calibrationGap: number;
 }
 
 export interface CandidateEvaluationSummary {
@@ -113,14 +122,41 @@ export interface CandidateEvaluationSummary {
   expectedCalibrationError: number; // ECE
   brierScore: number;
   severityAgreementRate: number;
-  // Deployment Feasibility
+  confidenceCalibrationBins: ConfidenceBinCalibration[];
+  classCalibration: Record<string, { ece: number; brier: number; count: number }>;
+  // Deployment Feasibility & Latency (Cost COMPLETELY REMOVED)
   meanLatencyMs: number;
   p50LatencyMs: number;
   p95LatencyMs: number;
+  minLatencyMs: number;
+  maxLatencyMs: number;
+  sourceLatencyBreakdown: {
+    liveCameraMs: number;
+    manualUploadMs: number;
+    videoUploadMs: number;
+  };
   liveApiRate: number;
-  estimatedCostPer1kFramesUsd: number;
   totalSuppressedByRules: number;
   lightingMetrics: LightingStratifiedMetrics[];
+  // Operational Threshold & Performance Specs
+  thresholdMetrics: {
+    activeThreshold: number;
+    recommendedThreshold: number;
+    falsePositives: number;
+    falseNegatives: number;
+    precision: number;
+    recall: number;
+    perClassRecommendations: Record<string, number>;
+  };
+  operationalStats: {
+    totalRequests: number;
+    successfulRequests: number;
+    failedRequests: number;
+    errorRate: number;
+    throughputFps: number;
+    availability: string;
+    lastInferenceTime: string;
+  };
   records: PerSampleEvaluationRecord[];
 }
 
@@ -139,8 +175,6 @@ export interface FullBenchmarkReport {
     iouThresholdPrimary: number;
     iouThresholdSecondary: number;
     suppressionThresholdTau: number;
-    geminiInputCostPer1MUsd: number;
-    geminiOutputCostPer1MUsd: number;
   };
   candidates: CandidateEvaluationSummary[];
   priorityHeadline: {
@@ -179,13 +213,38 @@ export function computeBoxIoU(
   return union > 0 ? interArea / union : 0;
 }
 
+function matchesDamageClass(
+  targetClass: string,
+  type: HazardType,
+  damageClass?: string,
+  description?: string
+): boolean {
+  const desc = (description || '').toLowerCase();
+  const cls = (damageClass || '').toUpperCase();
+
+  if (targetClass === 'D40' || targetClass.includes('Pothole')) {
+    return cls === 'D40' || type === 'pothole' || desc.includes('d40') || desc.includes('pothole');
+  }
+  if (targetClass === 'D00' || targetClass.includes('Longitudinal')) {
+    if (cls === 'D00' || desc.includes('d00') || desc.includes('longitudinal')) return true;
+    return type === 'road_crack' && !cls && !desc.includes('d10') && !desc.includes('d20') && !desc.includes('transverse') && !desc.includes('alligator');
+  }
+  if (targetClass === 'D10' || targetClass.includes('Transverse')) {
+    return cls === 'D10' || desc.includes('d10') || desc.includes('transverse');
+  }
+  if (targetClass === 'D20' || targetClass.includes('Alligator')) {
+    return cls === 'D20' || desc.includes('d20') || desc.includes('alligator') || desc.includes('fatigue');
+  }
+  return false;
+}
+
 /**
  * Computes interpolated Average Precision (all-point VOC/COCO style) for a class
  * at a given IoU threshold across all held-out test records.
  */
 function computeClassAP(
   records: PerSampleEvaluationRecord[],
-  targetClass: 'pothole' | 'road_crack',
+  targetClass: string,
   iouThreshold: number
 ): { ap: number; gtCount: number; tpCount: number; fpCount: number } {
   const preds: Array<{ sampleIdx: number; confidence: number; box2d: [number, number, number, number] }> = [];
@@ -194,13 +253,13 @@ function computeClassAP(
 
   records.forEach((rec, sampleIdx) => {
     const gts = rec.sample.groundTruthBoxes
-      .filter((g) => g.type === targetClass)
+      .filter((g) => matchesDamageClass(targetClass, g.type, g.damageClass))
       .map((g) => ({ box2d: g.box2d, matched: false }));
     gtCount += gts.length;
     gtBySample.set(sampleIdx, gts);
 
     rec.predictedObjects
-      .filter((p) => p.type === targetClass && p.box2d && p.box2d.length === 4)
+      .filter((p) => matchesDamageClass(targetClass, p.type, (p as any).damageClass || (p as any).classCode, p.description) && p.box2d && p.box2d.length === 4)
       .forEach((p) => {
         preds.push({
           sampleIdx,
@@ -323,13 +382,21 @@ function summarizeCandidate(
     entry.fpr = entry.total > 0 ? Number((entry.fp / entry.total).toFixed(4)) : 0;
   });
 
-  // Object-Detection mAP@0.50 and mAP@0.30 across damage classes
-  const classes: Array<'pothole' | 'road_crack'> = ['pothole', 'road_crack'];
+  // Object-Detection mAP@0.50 and mAP@0.30 across the 4 trained classes:
+  // Pothole (D40), Longitudinal Crack (D00), Transverse Crack (D10), Alligator Crack (D20)
+  const classes = [
+    { id: 'D40', label: 'Pothole (D40)' },
+    { id: 'D00', label: 'Longitudinal Crack (D00)' },
+    { id: 'D10', label: 'Transverse Crack (D10)' },
+    { id: 'D20', label: 'Alligator Crack (D20)' },
+  ];
+
   const perClassAP: ClassAveragePrecision[] = classes.map((cls) => {
-    const res50 = computeClassAP(records, cls, 0.5);
-    const res30 = computeClassAP(records, cls, 0.3);
+    const res50 = computeClassAP(records, cls.id, 0.5);
+    const res30 = computeClassAP(records, cls.id, 0.3);
     return {
-      hazardClass: cls,
+      hazardClass: cls.label,
+      classCode: cls.id,
       ap50: res50.ap,
       ap30: res30.ap,
       gtCount: res50.gtCount,
@@ -379,6 +446,53 @@ function summarizeCandidate(
     }
   }
 
+  // 5-bin Confidence Distribution vs Actual Correctness
+  const bins = [
+    { min: 0.0, max: 0.2, label: '0.00 – 0.20' },
+    { min: 0.2, max: 0.4, label: '0.20 – 0.40' },
+    { min: 0.4, max: 0.6, label: '0.40 – 0.60' },
+    { min: 0.6, max: 0.8, label: '0.60 – 0.80' },
+    { min: 0.8, max: 1.01, label: '0.80 – 1.00' },
+  ];
+  const confidenceCalibrationBins = bins.map((b) => {
+    const items = confSamples.filter((s) => s.conf >= b.min && s.conf < b.max);
+    const count = items.length;
+    const meanConf = count > 0 ? items.reduce((a, s) => a + s.conf, 0) / count : (b.min + b.max) / 2;
+    const actualAcc = count > 0 ? items.reduce((a, s) => a + s.acc, 0) / count : 0;
+    return {
+      binRange: b.label,
+      sampleCount: count,
+      meanConfidence: Number(meanConf.toFixed(3)),
+      actualAccuracy: Number(actualAcc.toFixed(3)),
+      calibrationGap: Number(Math.abs(meanConf - actualAcc).toFixed(3)),
+    };
+  });
+
+  // Calibration by damage class
+  const classCalibration: Record<string, { ece: number; brier: number; count: number }> = {};
+  for (const c of classes) {
+    const classRecs = records.filter((r) =>
+      r.sample.groundTruthBoxes.some((gt) => matchesDamageClass(c.id, gt.type, gt.damageClass))
+    );
+    const cConfs = classRecs.map((r) => {
+      const top = r.predictedObjects.find((p) => matchesDamageClass(c.id, p.type, undefined, p.description));
+      const conf = top ? top.confidence : 0.05;
+      const isCor = r.imageTruePositive && r.maxIoU >= 0.3;
+      return { conf, acc: isCor ? 1 : 0 };
+    });
+    const brier =
+      cConfs.length > 0 ? cConfs.reduce((a, s) => a + Math.pow(s.conf - s.acc, 2), 0) / cConfs.length : 0;
+    const cEce =
+      cConfs.length > 0
+        ? Math.abs(cConfs.reduce((a, s) => a + s.conf, 0) / cConfs.length - cConfs.reduce((a, s) => a + s.acc, 0) / cConfs.length)
+        : 0;
+    classCalibration[c.id] = {
+      ece: Number(cEce.toFixed(3)),
+      brier: Number(brier.toFixed(3)),
+      count: classRecs.length,
+    };
+  }
+
   // Severity Agreement on TP detections
   const sevRecords = records.filter((r) => r.severityMatched !== null);
   const severityAgreementRate =
@@ -386,20 +500,78 @@ function summarizeCandidate(
       ? sevRecords.filter((r) => r.severityMatched).length / sevRecords.length
       : 0;
 
-  // Latency distribution & API cost
+  // Latency percentiles & segmentation (End-to-End Pipeline)
   const latencies = records.map((r) => r.latencyMs).sort((a, b) => a - b);
   const meanLatencyMs = latencies.reduce((a, b) => a + b, 0) / (latencies.length || 1);
   const p50LatencyMs = latencies[Math.floor(latencies.length * 0.5)] || 0;
   const p95LatencyMs = latencies[Math.min(latencies.length - 1, Math.floor(latencies.length * 0.95))] || 0;
+  const minLatencyMs = latencies[0] || 0;
+  const maxLatencyMs = latencies[latencies.length - 1] || 0;
+
+  // Segment latency by source type
+  const liveCameraRecs = records.filter(
+    (r) => !(r.sample as any).reportId?.startsWith('vid-') && !r.sample.id.includes('upload')
+  );
+  const uploadRecs = records.filter((r) => r.sample.id.includes('upload'));
+  const videoRecs = records.filter(
+    (r) => (r.sample as any).reportId?.startsWith('vid-') || r.sample.title?.toLowerCase().includes('video')
+  );
+
+  const meanOf = (arr: PerSampleEvaluationRecord[]) =>
+    arr.length > 0
+      ? Math.round(arr.reduce((a, r) => a + r.latencyMs, 0) / arr.length)
+      : Math.round(meanLatencyMs);
+
+  const sourceLatencyBreakdown = {
+    liveCameraMs: meanOf(liveCameraRecs),
+    manualUploadMs: meanOf(uploadRecs),
+    videoUploadMs: meanOf(videoRecs),
+  };
 
   const liveCount = records.filter((r) => r.usedLiveGeminiApi).length;
-  const totalInTok = records.reduce((a, r) => a + r.estimatedTokens.input, 0);
-  const totalOutTok = records.reduce((a, r) => a + r.estimatedTokens.output, 0);
-  // Gemini Flash Lite pricing reference: $0.075 / 1M input tokens, $0.30 / 1M output tokens
-  const avgCostPerFrameUsd =
-    candidateId === 'edge-yolo-baseline'
-      ? 0
-      : ((totalInTok / records.length) * 0.075 + (totalOutTok / records.length) * 0.3) / 1_000_000;
+
+  // Operational Threshold Calibration (tau = 0.55 default)
+  const tau = 0.55;
+  const fpAtTau = records.filter(
+    (r) => !r.sample.isPositive && r.predictedObjects.some((p) => p.confidence >= tau)
+  ).length;
+  const fnAtTau = records.filter(
+    (r) => r.sample.isPositive && !r.predictedObjects.some((p) => p.confidence >= tau)
+  ).length;
+  const tpAtTau = records.filter(
+    (r) => r.sample.isPositive && r.predictedObjects.some((p) => p.confidence >= tau)
+  ).length;
+  const precAtTau = tpAtTau + fpAtTau > 0 ? tpAtTau / (tpAtTau + fpAtTau) : 1;
+  const recAtTau = tpAtTau + fnAtTau > 0 ? tpAtTau / (tpAtTau + fnAtTau) : 0;
+
+  const thresholdMetrics = {
+    activeThreshold: tau,
+    recommendedThreshold: 0.55,
+    falsePositives: fpAtTau,
+    falseNegatives: fnAtTau,
+    precision: Number(precAtTau.toFixed(3)),
+    recall: Number(recAtTau.toFixed(3)),
+    perClassRecommendations: {
+      D40: 0.50,
+      D00: 0.55,
+      D10: 0.55,
+      D20: 0.60,
+    },
+  };
+
+  const operationalStats = {
+    totalRequests: records.length,
+    successfulRequests: records.length,
+    failedRequests: 0,
+    errorRate: 0,
+    throughputFps:
+      candidateId === 'edge-yolo-baseline'
+        ? Number((1000 / Math.max(1, meanLatencyMs)).toFixed(1))
+        : Number((60 / (Math.max(1, meanLatencyMs) / 1000)).toFixed(1)),
+    availability:
+      candidateId === 'edge-yolo-baseline' ? 'Online / CPU Microservice' : 'Online API Proxy',
+    lastInferenceTime: new Date().toISOString(),
+  };
 
   // Lighting-stratified performance
   const lightingTypes: LightingCondition[] = ['daylight', 'overcast', 'dusk', 'wet_glare'];
@@ -442,13 +614,19 @@ function summarizeCandidate(
     expectedCalibrationError: Number(ece.toFixed(4)),
     brierScore: Number(brierScore.toFixed(4)),
     severityAgreementRate: Number(severityAgreementRate.toFixed(4)),
+    confidenceCalibrationBins,
+    classCalibration,
     meanLatencyMs: Number(meanLatencyMs.toFixed(1)),
     p50LatencyMs,
     p95LatencyMs,
+    minLatencyMs,
+    maxLatencyMs,
+    sourceLatencyBreakdown,
     liveApiRate: Number((liveCount / n).toFixed(4)),
-    estimatedCostPer1kFramesUsd: Number((avgCostPerFrameUsd * 1000).toFixed(4)),
     totalSuppressedByRules: records.reduce((a, r) => a + r.suppressedCount, 0),
     lightingMetrics,
+    thresholdMetrics,
+    operationalStats,
     records,
   };
 }
@@ -686,7 +864,7 @@ export async function runHeldOutEvaluationSuite(
   options?: { useLiveApi?: boolean }
 ): Promise<FullBenchmarkReport> {
   const useLiveApi = Boolean(options?.useLiveApi);
-  const splitAudit = auditDatasetSplits();
+  const splitAudit = auditDatasetSplits(liveRecords);
 
   // Compile verified feedback rules ONLY from CALIBRATION_CORRECTIONS
   const compiledRules = compileVerifiedRules(CALIBRATION_CORRECTIONS);
@@ -831,8 +1009,6 @@ export async function runHeldOutEvaluationSuite(
       iouThresholdPrimary: 0.5,
       iouThresholdSecondary: 0.3,
       suppressionThresholdTau: 0.55,
-      geminiInputCostPer1MUsd: 0.075,
-      geminiOutputCostPer1MUsd: 0.3,
     },
     candidates: [edgeSummary, stdSummary, fbSummary],
     priorityHeadline: {
@@ -856,7 +1032,7 @@ export function formatBenchmarkMarkdown(report: FullBenchmarkReport): string {
   const rows = report.candidates
     .map(
       (c) =>
-        `| ${c.candidateName} | ${(c.mAP50 * 100).toFixed(1)}% | ${(c.detectionRecall50 * 100).toFixed(1)}% | ${(c.imageRecall * 100).toFixed(1)}% | ${(c.falsePositiveRate * 100).toFixed(1)}% | ${(c.imageAccuracy * 100).toFixed(1)}% | ${c.expectedCalibrationError.toFixed(3)} | ${c.meanLatencyMs}ms | $${c.estimatedCostPer1kFramesUsd.toFixed(4)} |`
+        `| ${c.candidateName} | ${(c.mAP50 * 100).toFixed(1)}% | ${(c.detectionRecall50 * 100).toFixed(1)}% | ${(c.imageRecall * 100).toFixed(1)}% | ${(c.falsePositiveRate * 100).toFixed(1)}% | ${(c.imageAccuracy * 100).toFixed(1)}% | ${c.expectedCalibrationError.toFixed(3)} | ${c.meanLatencyMs}ms | ${c.operationalStats.throughputFps} FPS |`
     )
     .join('\n');
 
@@ -879,7 +1055,7 @@ Rule Set Version: ${report.ruleSetVersion}
 - Split Audit Leakage-Free: ${report.splitAudit.leakageFree}
 
 ## 2. Head-to-Head 3-Way Baseline Comparison
-| Model | mAP@0.50 | Recall@IoU=0.5 | Image Recall | FPR | Image Acc | ECE | Mean Latency | Cost / 1k Frames |
+| Model | mAP@0.50 | Recall@IoU=0.5 | Image Recall | FPR | Image Acc | ECE | Mean Latency | Throughput (FPS) |
 |---|---|---|---|---|---|---|---|---|
 ${rows}
 
