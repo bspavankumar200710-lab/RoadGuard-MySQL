@@ -18,6 +18,7 @@ export type NegativeCaseCategory =
   | 'water_puddle'
   | 'paint_marking'
   | 'speed_breaker'
+  | 'vehicle'
   | 'normal_road';
 
 export type SplitTag = 'calibration' | 'held_out_test' | 'production_live';
@@ -158,7 +159,7 @@ const CONFUSION_TAXONOMY_SPEC: Record<
       'EXCLUDE shallow reflective rainwater pools or wet glare patches unless jagged vertical cavity walls are visible.',
   },
   paint_marking: {
-    targetPredictedTypes: ['road_crack', 'broken_sign', 'other_hazard'],
+    targetPredictedTypes: ['pothole', 'road_crack', 'broken_sign', 'other_hazard'],
     triggerCues: [
       'paint',
       'zebra',
@@ -186,6 +187,32 @@ const CONFUSION_TAXONOMY_SPEC: Record<
     confidencePenalty: 0.39,
     canonicalConstraint:
       'EXCLUDE intentional painted or molded transverse speed humps / rumble strips spanning full lane width.',
+  },
+  vehicle: {
+    targetPredictedTypes: ['pothole', 'road_crack', 'other_hazard'],
+    triggerCues: [
+      'vehicle',
+      'car',
+      'motorcycle',
+      'scooter',
+      'auto',
+      'rickshaw',
+      'bus',
+      'truck',
+      'wheel',
+      'tire',
+      'tyre',
+      'bumper',
+      'hood',
+      'windshield',
+      'chassis',
+      'vehicle body',
+      'two-wheeler',
+    ],
+    geometricSignature: {},
+    confidencePenalty: 0.50,
+    canonicalConstraint:
+      'EXCLUDE moving or stationary vehicle bodies, scooters, motorcycles, auto-rickshaws, buses, car bumpers, and tires.',
   },
   normal_road: {
     targetPredictedTypes: ['pothole', 'road_crack', 'broken_sign', 'other_hazard'],
@@ -284,6 +311,20 @@ export const CALIBRATION_CORRECTIONS: DriverCorrectionSubmission[] = [
     operatorNote: 'Unverified submission kept pending until reviewer quorum confirms intact tar seam.',
     verificationStatus: 'pending_verification',
   },
+  {
+    id: 'corr-cal-007',
+    timestamp: '2026-10-15T15:20:00.000Z',
+    splitTag: 'calibration',
+    region: 'Bengaluru Peenya 2nd Main',
+    predictedType: 'pothole',
+    predictedBox2d: [620, 310, 810, 520],
+    rawConfidence: 0.82,
+    trueNegativeClass: 'vehicle',
+    operatorNote: 'Motorcycle tire and shadow on roadway misclassified as D40 pothole.',
+    verificationStatus: 'verified',
+    verifiedBy: 'Municipal QA Reviewer #1',
+    verifiedAt: '2026-10-15T16:00:00.000Z',
+  },
 ];
 
 /**
@@ -368,7 +409,7 @@ export function serializeRulesForInference(rules: VerifiedFeedbackRule[]): strin
  */
 export function applyVerifiedRulesToDetections(
   objects: DetectedObject[],
-  rules: VerifiedFeedbackRule[],
+  rules?: VerifiedFeedbackRule[],
   sceneMorphology?: {
     hasCircularMetallicRim?: boolean;
     hasSoftShadowBoundary?: boolean;
@@ -381,7 +422,13 @@ export function applyVerifiedRulesToDetections(
   keptObjects: DetectedObject[];
   suppressedObjects: DetectedObject[];
   traces: RuleApplicationTrace[];
+  confirmedPotholes: DetectedObject[];
+  uncertainCandidates: DetectedObject[];
+  rejectedFalsePositives: DetectedObject[];
 } {
+  const activeRules = rules && Array.isArray(rules) && rules.length > 0
+    ? rules
+    : compileVerifiedRules(CALIBRATION_CORRECTIONS);
   const keptObjects: DetectedObject[] = [];
   const suppressedObjects: DetectedObject[] = [];
   const traces: RuleApplicationTrace[] = [];
@@ -392,12 +439,37 @@ export function applyVerifiedRulesToDetections(
     let maxPenalty = 0;
     let matchReason = '';
 
-    for (const rule of rules) {
+    for (const rule of activeRules) {
       if (!rule.targetPredictedTypes.includes(obj.type)) continue;
 
-      const cueHit = rule.triggerCues.find((cue) => descLower.includes(cue));
-      let morphologyHit = false;
+      // Check whether this detection contains genuine structural damage markers
+      const hasStructuralCavity =
+        descLower.includes('cavity') ||
+        descLower.includes('crater') ||
+        descLower.includes('broken asphalt') ||
+        descLower.includes('deep hole') ||
+        descLower.includes('fracture') ||
+        descLower.includes('edge breakup') ||
+        (sceneMorphology?.hasStructuralAsphaltBreakup ?? false);
 
+      let cueHit: string | undefined;
+
+      // For water puddles: only match if it is purely a shallow puddle/reflection WITHOUT structural cavity
+      if (rule.trueNegativeClass === 'water_puddle') {
+        if (!hasStructuralCavity) {
+          cueHit = rule.triggerCues.find((cue) => descLower.includes(cue));
+        }
+      } else if (rule.trueNegativeClass === 'shadow') {
+        // For shadows: only match if it represents a harmless shadow on intact asphalt
+        if (!hasStructuralCavity) {
+          cueHit = rule.triggerCues.find((cue) => descLower.includes(cue));
+        }
+      } else {
+        // Manhole, paint marking, speed breaker: check trigger cues
+        cueHit = rule.triggerCues.find((cue) => descLower.includes(cue));
+      }
+
+      let morphologyHit = false;
       if (sceneMorphology && !sceneMorphology.hasStructuralAsphaltBreakup) {
         if (rule.trueNegativeClass === 'manhole' && sceneMorphology.hasCircularMetallicRim) {
           morphologyHit = true;
@@ -429,6 +501,15 @@ export function applyVerifiedRulesToDetections(
       matchedRule && calibratedConfidence < matchedRule.suppressionThreshold
     );
 
+    let decisionCategory: 'confirmed_pothole' | 'uncertain_candidate' | 'rejected_false_positive' = 'confirmed_pothole';
+    if (suppressed) {
+      decisionCategory = 'rejected_false_positive';
+    } else if (calibratedConfidence < 0.75) {
+      decisionCategory = 'uncertain_candidate';
+    } else {
+      decisionCategory = 'confirmed_pothole';
+    }
+
     traces.push({
       objectIndex: index,
       originalType: obj.type,
@@ -443,6 +524,9 @@ export function applyVerifiedRulesToDetections(
     const updatedObj: DetectedObject = {
       ...obj,
       confidence: calibratedConfidence,
+      decisionCategory,
+      exclusionRuleMatched: matchedRule ? matchedRule.ruleId : undefined,
+      exclusionReason: suppressed ? matchReason : undefined,
     };
 
     if (suppressed) {
@@ -452,7 +536,11 @@ export function applyVerifiedRulesToDetections(
     }
   });
 
-  return { keptObjects, suppressedObjects, traces };
+  const confirmedPotholes = keptObjects.filter((o) => o.decisionCategory === 'confirmed_pothole');
+  const uncertainCandidates = keptObjects.filter((o) => o.decisionCategory === 'uncertain_candidate');
+  const rejectedFalsePositives = [...suppressedObjects];
+
+  return { keptObjects, suppressedObjects, traces, confirmedPotholes, uncertainCandidates, rejectedFalsePositives };
 }
 
 /**

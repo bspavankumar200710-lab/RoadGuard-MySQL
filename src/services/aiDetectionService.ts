@@ -28,6 +28,7 @@ export interface IAIDetectionService {
 }
 
 export type SupportedDetectorModel =
+  | 'roadguard-fusion'
   | 'gemini-standard'
   | 'gemini-feedback'
   | 'yolov5'

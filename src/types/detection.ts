@@ -10,6 +10,12 @@ export interface DetectedObject {
   severity: SeverityLevel;
   description: string;
   box2d?: [number, number, number, number]; // [ymin, xmin, ymax, xmax] 0-1000
+  damageClass?: string;
+  visualEvidence?: string;
+  // Decision Category (Requirement #6: Confirmed pothole, Uncertain candidate, Rejected false positive)
+  decisionCategory?: 'confirmed_pothole' | 'uncertain_candidate' | 'rejected_false_positive';
+  exclusionRuleMatched?: string;
+  exclusionReason?: string;
   // Vehicle / Scooter speed estimation properties
   vehicleType?: VehicleType;
   estimatedSpeedKmh?: number;
@@ -27,8 +33,9 @@ export interface DetectionResult {
 
 export type HazardVerificationStatus = 'unverified' | 'confirmed' | 'disputed';
 export type VerificationStatusType = 'pending' | 'verified' | 'rejected';
-export type ImageSourceType = 'live_camera' | 'manual_upload' | 'video_upload';
+export type ImageSourceType = 'live_camera' | 'manual_upload' | 'video_upload' | 'automated_location_scan';
 export type AIEngineType =
+  | 'roadguard-fusion'
   | 'yolov5'
   | 'gemini-feedback'
   | 'gemini-standard'

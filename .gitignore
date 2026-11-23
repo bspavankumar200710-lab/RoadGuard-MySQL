@@ -17,3 +17,13 @@ yolov8_env/
 yolov8n.pt
 __pycache__/
 *.pyc
+
+# Archives and build artifacts
+*.zip
+
+# Temporary Office and scratch files
+~$*
+docx_text.txt
+modal_test_crop.jpg
+user_test_scene_cropped.jpg
+word/

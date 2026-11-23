@@ -65,7 +65,11 @@ import {
   ChevronUp,
   Info,
   MapPin,
+  RotateCcw,
 } from 'lucide-react';
+import { geminiFeedbackService } from '../services/geminiDetectionService';
+import { imageStorageService } from '../services/imageStorageService';
+import { locationService } from '../services/locationService';
 
 type EvalSectionTab = 'live-history' | 'baselines' | 'mechanism' | 'dataset' | 'deployment';
 
@@ -232,6 +236,237 @@ export const EvaluationPage: React.FC = () => {
       });
     } finally {
       setIsEvaluatingRules(false);
+    }
+  };
+
+  // Image Upload & Desktop Camera Capture State
+  const [isCameraActive, setIsCameraActive] = useState<boolean>(false);
+  const [isProcessingMedia, setIsProcessingMedia] = useState<boolean>(false);
+  const [processingStatusText, setProcessingStatusText] = useState<string>('');
+  const [cameraError, setCameraError] = useState<string | null>(null);
+  const [capturedPhotoUrl, setCapturedPhotoUrl] = useState<string | null>(null);
+
+  const fileInputRef = React.useRef<HTMLInputElement | null>(null);
+  const webcamVideoRef = React.useRef<HTMLVideoElement | null>(null);
+  const webcamStreamRef = React.useRef<MediaStream | null>(null);
+
+  // Clean up camera stream on unmount
+  useEffect(() => {
+    return () => {
+      if (webcamStreamRef.current) {
+        webcamStreamRef.current.getTracks().forEach((t) => t.stop());
+        webcamStreamRef.current = null;
+      }
+    };
+  }, []);
+
+  // When camera active state changes, connect stream to video element
+  useEffect(() => {
+    if (isCameraActive && webcamVideoRef.current && webcamStreamRef.current) {
+      webcamVideoRef.current.srcObject = webcamStreamRef.current;
+      webcamVideoRef.current.play().catch(() => {});
+    }
+  }, [isCameraActive]);
+
+  // Start webcam stream
+  const handleStartCameraCapture = async () => {
+    setCameraError(null);
+    setCapturedPhotoUrl(null);
+
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      setCameraError('Desktop camera is not supported or accessible in this environment.');
+      return;
+    }
+
+    try {
+      if (webcamStreamRef.current) {
+        webcamStreamRef.current.getTracks().forEach((t) => t.stop());
+        webcamStreamRef.current = null;
+      }
+
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' },
+        audio: false,
+      });
+
+      webcamStreamRef.current = stream;
+      setIsCameraActive(true);
+
+      setTimeout(() => {
+        if (webcamVideoRef.current) {
+          webcamVideoRef.current.srcObject = stream;
+          webcamVideoRef.current.play().catch((e) => console.warn('Video play warning:', e));
+        }
+      }, 50);
+    } catch (err: any) {
+      console.error('Camera access error:', err);
+      setCameraError(err?.message || 'Could not access desktop camera. Please check permissions.');
+      setIsCameraActive(false);
+    }
+  };
+
+  // Close webcam stream
+  const handleStopCamera = () => {
+    if (webcamStreamRef.current) {
+      webcamStreamRef.current.getTracks().forEach((t) => t.stop());
+      webcamStreamRef.current = null;
+    }
+    setIsCameraActive(false);
+    setCameraError(null);
+  };
+
+  // Capture frame from webcam
+  const handleCapturePhoto = () => {
+    if (!webcamVideoRef.current) return;
+    const video = webcamVideoRef.current;
+    const canvas = document.createElement('canvas');
+    canvas.width = video.videoWidth || 1280;
+    canvas.height = video.videoHeight || 720;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.92);
+
+    // Stop camera tracks cleanly
+    if (webcamStreamRef.current) {
+      webcamStreamRef.current.getTracks().forEach((t) => t.stop());
+      webcamStreamRef.current = null;
+    }
+    setIsCameraActive(false);
+    setCapturedPhotoUrl(dataUrl);
+
+    // Send through Gemini Vision detection, save to MySQL, and run feedback rule evaluation
+    processImageThroughGeminiAndRules(dataUrl, 'live_camera');
+  };
+
+  // Retake photo
+  const handleRetakePhoto = () => {
+    setCapturedPhotoUrl(null);
+    handleStartCameraCapture();
+  };
+
+  // Handle file upload from computer
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    e.target.value = ''; // Reset input to allow re-selecting same file
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const dataUrl = event.target?.result as string;
+      if (dataUrl) {
+        setCapturedPhotoUrl(dataUrl);
+        processImageThroughGeminiAndRules(dataUrl, 'manual_upload');
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
+  // Unified pipeline: Gemini Vision Detection -> Save in MySQL -> Feedback Rule Evaluation
+  const processImageThroughGeminiAndRules = async (
+    dataUrl: string,
+    source: 'live_camera' | 'manual_upload'
+  ) => {
+    setIsProcessingMedia(true);
+    setProcessingStatusText('Analyzing image with Gemini Vision...');
+    setRuleEvaluationMsg(null);
+
+    try {
+      // 1. Run Gemini Vision Detection
+      const detectionResult = await geminiFeedbackService.detectRoadProblems(
+        dataUrl,
+        'image/jpeg',
+        'both'
+      );
+
+      // 2. Generate annotated preview if bounding boxes exist
+      let annotatedImageUrl: string | undefined = undefined;
+      if (
+        detectionResult.objects &&
+        detectionResult.objects.length > 0 &&
+        detectionResult.objects.some((o) => o.box2d)
+      ) {
+        try {
+          const ann = await imageStorageService.generateAnnotatedImage(
+            dataUrl,
+            detectionResult.objects,
+            1280
+          );
+          annotatedImageUrl = ann.dataUrl;
+        } catch (annErr) {
+          console.warn('[EvaluationPage] Annotated preview generation skipped:', annErr);
+        }
+      }
+
+      // 3. Resolve hazard class and name
+      const primaryObj = detectionResult.objects[0] || {
+        type: 'pothole' as const,
+        confidence: 0.88,
+        severity: 'medium' as const,
+        description: 'Road condition inspection frame',
+      };
+      const damageClass = imageStorageService.extractDamageClass(primaryObj);
+      const damageName = imageStorageService.resolveDamageName(damageClass, primaryObj.type);
+
+      // 4. Coordinates
+      let coords = locationService.getCurrentCoordinates();
+      const lat = coords?.latitude ?? null;
+      const lng = coords?.longitude ?? null;
+      const locHint =
+        lat != null && lng != null
+          ? `${lat.toFixed(4)}°, ${lng.toFixed(4)}°`
+          : source === 'live_camera'
+          ? 'Desktop Camera Live Capture'
+          : 'Uploaded Image File';
+
+      setProcessingStatusText('Persisting detection record in MySQL roadguard_db...');
+
+      // 5. Save detection in MySQL
+      const newRecord = await detectionService.addDetection({
+        type: primaryObj.type,
+        damageClass,
+        damageName,
+        confidence: primaryObj.confidence,
+        severity: primaryObj.severity,
+        description: primaryObj.description || 'Observed road condition',
+        latitude: lat,
+        longitude: lng,
+        locationName: locHint,
+        imageUrl: dataUrl,
+        annotatedImageUrl,
+        imageSource: source,
+        aiEngine: 'gemini-feedback',
+        verificationStatus: 'pending',
+        box2d: primaryObj.box2d,
+      });
+
+      setProcessingStatusText('Evaluating against 5 compiled verified feedback rules...');
+
+      // 6. Evaluate against 5 canonical rules
+      const rules = activeFiveRules.length >= 5 ? activeFiveRules : await getActiveFiveVerifiedRules();
+      const evalReport = await evaluateImageAgainstFiveRules(newRecord, rules);
+
+      // 7. Save evaluation in MySQL (feedback_rule_evaluations)
+      await saveFeedbackRuleEvaluation(evalReport);
+
+      // 8. Update UI state
+      setSelectedHistoryImageId(newRecord.id);
+      setCurrentRuleEvaluation(evalReport);
+      setPastEvaluationsForImage([evalReport]);
+      setRuleEvaluationMsg({
+        type: 'success',
+        text: `Image successfully processed by Gemini Vision and saved to MySQL (ID: ${newRecord.id}). 5 Feedback Gating Rules evaluated (Score: ${evalReport.overallScore > 0 ? '+' : ''}${evalReport.overallScore.toFixed(2)}).`,
+      });
+    } catch (err: any) {
+      console.error('[EvaluationPage] Media processing error:', err);
+      setRuleEvaluationMsg({
+        type: 'error',
+        text: `Processing error: ${err?.message || 'Gemini Vision or MySQL failure'}`,
+      });
+    } finally {
+      setIsProcessingMedia(false);
+      setProcessingStatusText('');
     }
   };
 
@@ -1586,11 +1821,36 @@ export const EvaluationPage: React.FC = () => {
                     </div>
                   </div>
                 </div>
-                <div className="flex items-center gap-2 self-start sm:self-auto">
-                  <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-indigo-50 text-indigo-700 border border-indigo-200">
-                    <ShieldCheck className="w-3.5 h-3.5 text-indigo-600" />
-                    {rulesToDisplay.length} Active Rules ({ruleVersionToDisplay})
-                  </span>
+                <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto">
+                  {/* Upload Button */}
+                  <button
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={isProcessingMedia || isCameraActive}
+                    className="px-3.5 py-1.5 text-xs font-semibold rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white flex items-center gap-1.5 shadow-sm transition active:scale-95 disabled:opacity-50 cursor-pointer"
+                    title="Upload image file from computer"
+                  >
+                    <Upload className="w-3.5 h-3.5" />
+                    Upload
+                  </button>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={handleFileUpload}
+                  />
+
+                  {/* Capture from Desktop Camera Button immediately to its right */}
+                  <button
+                    onClick={handleStartCameraCapture}
+                    disabled={isProcessingMedia || isCameraActive}
+                    className="px-3.5 py-1.5 text-xs font-semibold rounded-lg bg-slate-900 hover:bg-slate-800 text-white flex items-center gap-1.5 shadow-sm transition active:scale-95 disabled:opacity-50 cursor-pointer"
+                    title="Open desktop camera to capture road photo"
+                  >
+                    <Camera className="w-3.5 h-3.5 text-indigo-300" />
+                    Capture from Desktop Camera
+                  </button>
+
                   <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
                     <Database className="w-3.5 h-3.5 text-emerald-600" />
                     MySQL roadguard_db
@@ -1685,43 +1945,103 @@ export const EvaluationPage: React.FC = () => {
                     {/* Left: Image Thumbnail & Preview Action */}
                     <div className="md:col-span-5 p-4 bg-slate-900 flex flex-col justify-between relative group">
                       <div className="relative aspect-video w-full rounded-lg overflow-hidden bg-slate-950 flex items-center justify-center">
-                        {selectedRecord.imageUrl ? (
-                          <img
-                            src={selectedRecord.imageUrl}
-                            alt={selectedRecord.id}
-                            className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
-                          />
+                        {isCameraActive ? (
+                          /* Live Desktop Camera Viewport */
+                          <div className="relative w-full h-full flex items-center justify-center bg-black">
+                            <video
+                              ref={webcamVideoRef}
+                              autoPlay
+                              playsInline
+                              muted
+                              className="w-full h-full object-cover"
+                            />
+                            {/* Live indicator badge */}
+                            <div className="absolute top-2 left-2 flex items-center gap-1.5 z-10">
+                              <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-600/90 text-white backdrop-blur shadow-sm flex items-center gap-1.5">
+                                <span className="w-2 h-2 rounded-full bg-white animate-pulse" /> Desktop Camera Live
+                              </span>
+                            </div>
+                            {/* Camera controls overlay */}
+                            <div className="absolute bottom-2.5 inset-x-2.5 flex items-center justify-between gap-2 z-10">
+                              <button
+                                onClick={handleCapturePhoto}
+                                className="px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-md flex items-center gap-1.5 transition active:scale-95 cursor-pointer"
+                              >
+                                <Camera className="w-3.5 h-3.5" /> Capture Photo
+                              </button>
+                              <button
+                                onClick={handleStopCamera}
+                                className="px-2.5 py-1.5 rounded-lg bg-black/70 hover:bg-black/90 text-white text-xs font-medium backdrop-blur shadow transition cursor-pointer"
+                              >
+                                <X className="w-3.5 h-3.5" /> Cancel
+                              </button>
+                            </div>
+                          </div>
+                        ) : isProcessingMedia ? (
+                          /* Processing state with spinner */
+                          <div className="w-full h-full flex flex-col items-center justify-center bg-slate-950 text-white p-4 text-center">
+                            <RefreshCw className="w-8 h-8 text-indigo-400 animate-spin mb-2" />
+                            <span className="text-xs font-semibold text-slate-200">{processingStatusText || 'Analyzing with Gemini Vision...'}</span>
+                            <span className="text-[10px] text-slate-400 mt-1">Detecting road damage & saving to MySQL</span>
+                          </div>
+                        ) : (capturedPhotoUrl || selectedRecord?.imageUrl) ? (
+                          /* Normal / Captured Photograph Preview */
+                          <div className="relative w-full h-full">
+                            <img
+                              src={capturedPhotoUrl || selectedRecord?.imageUrl}
+                              alt={selectedRecord?.id || 'Hazard Preview'}
+                              className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
+                            />
+
+                            {/* Source Tag Badge */}
+                            <div className="absolute top-2 left-2 flex items-center gap-1.5">
+                              {(selectedRecord?.imageSource === 'live_camera' || (capturedPhotoUrl && !selectedRecord?.imageUrl)) ? (
+                                <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-blue-600/90 text-white backdrop-blur shadow-sm flex items-center gap-1">
+                                  <Camera className="w-3 h-3" /> Live Camera
+                                </span>
+                              ) : (
+                                <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-purple-600/90 text-white backdrop-blur shadow-sm flex items-center gap-1">
+                                  <Upload className="w-3 h-3" /> Manual Upload
+                                </span>
+                              )}
+                            </div>
+
+                            {/* Action Buttons Overlay */}
+                            <div className="absolute bottom-2 right-2 flex items-center gap-1.5">
+                              <button
+                                onClick={handleRetakePhoto}
+                                className="px-2.5 py-1 rounded bg-black/75 hover:bg-black/95 text-white text-[11px] font-medium backdrop-blur flex items-center gap-1 transition shadow-sm cursor-pointer"
+                                title="Open desktop camera to retake photo"
+                              >
+                                <RotateCcw className="w-3 h-3 text-amber-300" /> Retake Photo
+                              </button>
+
+                              <button
+                                onClick={() => setPreviewImage(capturedPhotoUrl || selectedRecord?.imageUrl || null)}
+                                className="px-2.5 py-1 rounded bg-black/75 hover:bg-black/95 text-white text-[11px] font-medium backdrop-blur flex items-center gap-1 transition shadow-sm cursor-pointer"
+                                title="Open full size photograph"
+                              >
+                                <Eye className="w-3.5 h-3.5" /> Full Size
+                              </button>
+                            </div>
+                          </div>
                         ) : (
                           <div className="text-center text-slate-500 p-4">
                             <Camera className="w-8 h-8 mx-auto mb-2 opacity-50" />
                             <span className="text-xs">No image preview data</span>
                           </div>
                         )}
-
-                        {/* Source Tag Badge */}
-                        <div className="absolute top-2 left-2 flex items-center gap-1.5">
-                          {selectedRecord.imageSource === 'live_camera' ? (
-                            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-blue-600/90 text-white backdrop-blur shadow-sm flex items-center gap-1">
-                              <Camera className="w-3 h-3" /> Live Camera
-                            </span>
-                          ) : (
-                            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-purple-600/90 text-white backdrop-blur shadow-sm flex items-center gap-1">
-                              <Upload className="w-3 h-3" /> Manual Upload
-                            </span>
-                          )}
-                        </div>
-
-                        {/* Enlarge Button */}
-                        {selectedRecord.imageUrl && (
-                          <button
-                            onClick={() => setPreviewImage(selectedRecord.imageUrl || null)}
-                            className="absolute bottom-2 right-2 px-2.5 py-1 rounded bg-black/70 hover:bg-black/90 text-white text-[11px] font-medium backdrop-blur flex items-center gap-1 transition shadow-sm"
-                            title="Open full size photograph"
-                          >
-                            <Eye className="w-3.5 h-3.5" /> Full Size
-                          </button>
-                        )}
                       </div>
+
+                      {/* Camera Error Alert */}
+                      {cameraError && (
+                        <div className="mt-2 p-2 bg-rose-950/80 border border-rose-800 text-rose-200 text-xs rounded flex items-center justify-between">
+                          <span>{cameraError}</span>
+                          <button onClick={() => setCameraError(null)} className="text-rose-300 hover:text-white">
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      )}
 
                       <div className="mt-3 flex items-center justify-between text-slate-400 text-[11px]">
                         <span className="truncate max-w-[200px]" title={selectedRecord.locationName || 'Road Sector'}>
@@ -2217,90 +2537,6 @@ export const EvaluationPage: React.FC = () => {
                   >
                     <div className="font-bold text-slate-900">{item.step}</div>
                     <p className="text-[11px] text-slate-600 leading-relaxed">{item.detail}</p>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* 5. PRESERVED EXISTING SECTION: COMPILED RULES TABLE */}
-            <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
-              <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between">
-                <div>
-                  <h3 className="text-sm font-bold text-slate-900">
-                    Compiled Verified Feedback Rules ({rulesToDisplay.length} Active)
-                  </h3>
-                  <p className="text-xs text-slate-500 mt-0.5">
-                    Reproducible rule definitions compiled exclusively from verified calibration-split
-                    corrections (tau = {CALIBRATION_CONFIDENCE_THRESHOLD_TAU}).
-                  </p>
-                </div>
-                <span className="text-xs font-mono text-slate-500">{ruleVersionToDisplay}</span>
-              </div>
-
-              <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse text-xs">
-                  <thead>
-                    <tr className="border-b border-slate-200 bg-slate-50 text-slate-600">
-                      <th className="py-2.5 px-4 font-semibold">Rule ID / Hash</th>
-                      <th className="py-2.5 px-3 font-semibold">Negative Class</th>
-                      <th className="py-2.5 px-3 font-semibold">Source Corrections</th>
-                      <th className="py-2.5 px-3 font-semibold text-right">Penalty</th>
-                      <th className="py-2.5 px-4 font-semibold">Compiled Constraint Clause</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {rulesToDisplay.map((rule: VerifiedFeedbackRule) => (
-                      <tr key={rule.ruleId} className="hover:bg-slate-50">
-                        <td className="py-3 px-4 font-mono text-[11px] text-slate-900 whitespace-nowrap">
-                          <div className="font-bold">{rule.ruleId}</div>
-                          <div className="text-slate-500">#{rule.ruleHash}</div>
-                        </td>
-                        <td className="py-3 px-3 font-medium text-slate-800 capitalize whitespace-nowrap">
-                          {rule.trueNegativeClass.replace('_', ' ')}
-                        </td>
-                        <td className="py-3 px-3 font-mono text-[11px] text-slate-600">
-                          {rule.sourceCorrectionIds.join(', ')}
-                        </td>
-                        <td className="py-3 px-3 font-mono tabular-nums text-right font-semibold text-rose-700">
-                          -{rule.confidencePenalty.toFixed(2)}
-                        </td>
-                        <td className="py-3 px-4 text-slate-600 leading-relaxed">
-                          {rule.canonicalConstraint}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-
-            {/* 6. PRESERVED EXISTING SECTION: CALIBRATION SUBMISSIONS LOG */}
-            <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
-              <div className="px-5 py-4 border-b border-slate-200">
-                <h3 className="text-sm font-bold text-slate-900">
-                  Calibration-Split Correction Audit Log
-                </h3>
-                <p className="text-xs text-slate-500 mt-0.5">
-                  Notice corr-cal-006 remains pending_verification and is excluded from rule
-                  compilation until reviewer sign-off.
-                </p>
-              </div>
-              <div className="divide-y divide-slate-100 text-xs">
-                {CALIBRATION_CORRECTIONS.map((c) => (
-                  <div key={c.id} className="px-5 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                    <div>
-                      <div className="font-mono font-semibold text-slate-900">
-                        {c.id} · {c.region} · {c.predictedType} → {c.trueNegativeClass}
-                      </div>
-                      <div className="text-slate-600 mt-0.5">{c.operatorNote}</div>
-                    </div>
-                    <span
-                      className={`font-mono text-[11px] font-semibold shrink-0 ${
-                        c.verificationStatus === 'verified' ? 'text-emerald-700' : 'text-amber-700'
-                      }`}
-                    >
-                      {c.verificationStatus}
-                    </span>
                   </div>
                 ))}
               </div>

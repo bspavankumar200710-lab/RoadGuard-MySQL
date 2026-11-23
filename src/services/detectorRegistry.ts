@@ -5,6 +5,7 @@ import {
   geminiDetectionService,
 } from './geminiDetectionService';
 import { yoloV5DetectionService } from './yoloV5DetectionService';
+import { multiModelFusionService } from './multiModelFusionService';
 
 const STORAGE_KEY = 'roadguard_active_detector';
 
@@ -21,7 +22,7 @@ export interface DetectorMetadata {
 type Listener = (detector: IAIDetectionService) => void;
 
 class DetectorRegistry {
-  private activeId: SupportedDetectorModel = 'gemini-feedback';
+  private activeId: SupportedDetectorModel = 'roadguard-fusion';
   private listeners: Set<Listener> = new Set();
 
   constructor() {
@@ -29,6 +30,7 @@ class DetectorRegistry {
       try {
         const saved = localStorage.getItem(STORAGE_KEY) as SupportedDetectorModel | null;
         if (
+          saved === 'roadguard-fusion' ||
           saved === 'gemini-standard' ||
           saved === 'gemini-feedback' ||
           saved === 'yolov5' ||
@@ -53,6 +55,8 @@ class DetectorRegistry {
 
   public resolveDetector(id: SupportedDetectorModel): IAIDetectionService {
     switch (id) {
+      case 'roadguard-fusion':
+        return multiModelFusionService;
       case 'gemini-standard':
         return geminiStandardService;
       case 'gemini-feedback':
@@ -95,9 +99,27 @@ class DetectorRegistry {
   public getAvailableDetectors(): DetectorMetadata[] {
     return [
       {
+        id: 'roadguard-fusion',
+        name: 'RoadGuard Multi-Model AI (YOLO + Gemini + Feedback Gating)',
+        badge: 'Recommended (Multi-Scale Sliced Ensemble)',
+        description: 'Complete complementary inspection: combines YOLO high-resolution sliced localization with Gemini systematic road inspection and verified feedback rules.',
+        classes: ['D40 (Potholes)', 'D00 (Longitudinal)', 'D10 (Transverse)', 'D20 (Alligator)', 'Vehicle Speeds'],
+        latencyType: 'Multi-Pass Sliced Inspection (~450-850ms)',
+        isReady: true,
+      },
+      {
+        id: 'yolov5',
+        name: 'YOLOv5 Road Damage Detector',
+        badge: 'Specialized Neural Detector',
+        description: 'Dedicated Python YOLOv5 FastAPI service trained on RDD2022 road damage classes: D00, D10, D20, D40 with sliced SAHI inference.',
+        classes: ['D00 (Longitudinal Cracks)', 'D10 (Transverse Cracks)', 'D20 (Alligator Cracks)', 'D40 (Potholes)'],
+        latencyType: 'FastAPI Microservice (~40-90ms)',
+        isReady: yoloV5DetectionService.isReady,
+      },
+      {
         id: 'gemini-feedback',
         name: 'Feedback-Guided Gemini Vision',
-        badge: 'Proposed Method (Verified Rules)',
+        badge: 'Multimodal Road Inspection (Verified Rules)',
         description: 'Large multimodal model augmented with verified driver corrections & post-inference gating to eliminate false positives.',
         classes: ['D40 (Potholes)', 'D00 (Longitudinal Cracks)', 'D10 (Transverse Cracks)', 'D20 (Alligator Cracks)'],
         latencyType: 'Cloud Vision API (~350-700ms)',
@@ -111,15 +133,6 @@ class DetectorRegistry {
         classes: ['D40 (Potholes)', 'D00 (Longitudinal Cracks)', 'D10 (Transverse Cracks)', 'D20 (Alligator Cracks)'],
         latencyType: 'Cloud Vision API (~350-700ms)',
         isReady: geminiStandardService.isReady,
-      },
-      {
-        id: 'yolov5',
-        name: 'YOLOv5 Road Damage Detector',
-        badge: 'Specialized Neural Detector',
-        description: 'Dedicated Python YOLOv5 FastAPI service trained on RDD2022 road damage classes: D00, D10, D20, D40.',
-        classes: ['D00 (Longitudinal Cracks)', 'D10 (Transverse Cracks)', 'D20 (Alligator Cracks)', 'D40 (Potholes)'],
-        latencyType: 'FastAPI Microservice (~40-90ms)',
-        isReady: yoloV5DetectionService.isReady,
       },
     ];
   }

@@ -93,6 +93,11 @@ export async function loadGoogleMaps(): Promise<typeof google> {
     // Load essential libraries
     await importLibrary('maps');
     await importLibrary('marker');
+    try {
+      await importLibrary('places');
+    } catch {
+      // Places library optional or fallback via backend API
+    }
 
     if (!(window as any).google?.maps) {
       throw new Error('Google Maps library failed to initialize on window object.');

@@ -41,7 +41,9 @@ export const ManualUploadModal: React.FC<ManualUploadModalProps> = ({
   const [previewDataUrl, setPreviewDataUrl] = useState<string>('');
   const [annotatedPreviewUrl, setAnnotatedPreviewUrl] = useState<string>('');
   const [selectedDetector, setSelectedDetector] =
-    useState<SupportedDetectorModel>('yolov5');
+    useState<SupportedDetectorModel>('roadguard-fusion');
+  const [detectionTarget, setDetectionTarget] =
+    useState<'potholes' | 'both'>('potholes');
 
   const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
   const [isSaving, setIsSaving] = useState<boolean>(false);
@@ -101,7 +103,7 @@ export const ManualUploadModal: React.FC<ManualUploadModalProps> = ({
       const result = await detector.detectRoadProblems(
         previewDataUrl,
         'image/jpeg',
-        'both'
+        detectionTarget
       );
 
       setAnalysisResult(result);
@@ -178,45 +180,54 @@ export const ManualUploadModal: React.FC<ManualUploadModalProps> = ({
         ? `${lat.toFixed(4)}°, ${lng.toFixed(4)}°`
         : 'Location unrecorded';
 
-      const primaryObj = analysisResult.objects[0] || {
-        type: 'other_hazard' as const,
-        confidence: 0.85,
-        severity: 'medium' as const,
-        description: 'Manual road observation',
-      };
+      const reportBatchId = `report_${Date.now()}`;
+      let primaryRecordId = '';
 
-      const damageClass =
-        imageStorageService.extractDamageClass(primaryObj);
+      const targetsToSave =
+        analysisResult.objects && analysisResult.objects.length > 0
+          ? analysisResult.objects
+          : [
+              {
+                type: 'other_hazard' as const,
+                confidence: 0.85,
+                severity: 'medium' as const,
+                description: 'Manual road observation',
+              },
+            ];
 
-      const damageName =
-        imageStorageService.resolveDamageName(
+      for (let i = 0; i < targetsToSave.length; i++) {
+        const obj = targetsToSave[i];
+        const damageClass = imageStorageService.extractDamageClass(obj);
+        const damageName = imageStorageService.resolveDamageName(damageClass, obj.type);
+
+        const record = await detectionService.addDetection({
+          reportId: reportBatchId,
+          type: obj.type,
           damageClass,
-          primaryObj.type
-        );
+          damageName,
+          confidence: obj.confidence,
+          severity: obj.severity,
+          description: obj.description,
+          latitude: lat,
+          longitude: lng,
+          locationName: locHint,
+          imageUrl: previewDataUrl,
+          annotatedImageUrl: annotatedPreviewUrl || undefined,
+          imageSource: 'manual_upload',
+          aiEngine: selectedDetector,
+          verificationStatus: 'pending',
+          box2d: obj.box2d,
+        });
 
-      // Send report to the MySQL-backed detection API
-      const record = await detectionService.addDetection({
-        type: primaryObj.type,
-        damageClass,
-        damageName,
-        confidence: primaryObj.confidence,
-        severity: primaryObj.severity,
-        description: primaryObj.description,
-        latitude: lat,
-        longitude: lng,
-        locationName: locHint,
-        imageUrl: previewDataUrl,
-        annotatedImageUrl: annotatedPreviewUrl || undefined,
-        imageSource: 'manual_upload',
-        aiEngine: selectedDetector,
-        verificationStatus: 'pending',
-        box2d: primaryObj.box2d,
-      });
+        if (i === 0) {
+          primaryRecordId = record.id;
+        }
+      }
 
-      setSuccessReportId(record.id);
+      setSuccessReportId(primaryRecordId);
 
       if (onReportSaved) {
-        onReportSaved(record.id);
+        onReportSaved(primaryRecordId);
       }
     } catch (err: any) {
       console.error(
@@ -309,16 +320,31 @@ export const ManualUploadModal: React.FC<ManualUploadModalProps> = ({
                   <span>Choose AI Detection Engine:</span>
                 </label>
 
-                <div className="grid grid-cols-3 gap-1.5 bg-slate-100 p-1.5 rounded-2xl">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 bg-slate-100 p-1.5 rounded-2xl">
                   <button
-                    onClick={() => setSelectedDetector('yolov5')}
-                    className={`py-2 px-2 text-[11px] font-bold rounded-xl transition-all flex flex-col items-center justify-center gap-1 ${
-                      selectedDetector === 'yolov5' || selectedDetector === 'yolov8-nano'
+                    onClick={() => setSelectedDetector('roadguard-fusion')}
+                    className={`py-2 px-2 text-[10px] font-bold rounded-xl transition-all flex flex-col items-center justify-center gap-1 ${
+                      selectedDetector === 'roadguard-fusion'
                         ? 'bg-blue-600 text-white shadow-sm'
-                        : 'text-slate-600 hover:text-slate-900'
+                        : 'text-slate-600 hover:text-slate-900 bg-white/70'
                     }`}
                   >
-                    <div className="flex items-center gap-1.5">
+                    <div className="flex items-center gap-1">
+                      <Sparkles className="w-3 h-3 text-amber-300" />
+                      <span>Multi-Model AI</span>
+                    </div>
+                    <span className="text-[8px] opacity-80">YOLO + Gemini Fused</span>
+                  </button>
+
+                  <button
+                    onClick={() => setSelectedDetector('yolov5')}
+                    className={`py-2 px-2 text-[10px] font-bold rounded-xl transition-all flex flex-col items-center justify-center gap-1 ${
+                      selectedDetector === 'yolov5' || selectedDetector === 'yolov8-nano'
+                        ? 'bg-blue-600 text-white shadow-sm'
+                        : 'text-slate-600 hover:text-slate-900 bg-white/70'
+                    }`}
+                  >
+                    <div className="flex items-center gap-1">
                       <span
                         className={`w-2 h-2 rounded-full ${
                           yoloV5DetectionService.isReady
@@ -326,49 +352,92 @@ export const ManualUploadModal: React.FC<ManualUploadModalProps> = ({
                             : 'bg-amber-300 animate-pulse'
                         }`}
                       />
-                      <span>YOLOv5 Detector</span>
+                      <span>YOLOv5 Sliced</span>
                     </div>
-                    <span className="text-[9px] opacity-80">PyTorch RDD</span>
+                    <span className="text-[8px] opacity-80">PyTorch RDD Tiled</span>
                   </button>
 
                   <button
                     onClick={() => setSelectedDetector('gemini-feedback')}
-                    className={`py-2 px-2 text-[11px] font-bold rounded-xl transition-all flex flex-col items-center justify-center gap-1 ${
+                    className={`py-2 px-2 text-[10px] font-bold rounded-xl transition-all flex flex-col items-center justify-center gap-1 ${
                       selectedDetector === 'gemini-feedback' || selectedDetector === 'gemini-vision'
                         ? 'bg-purple-600 text-white shadow-sm'
-                        : 'text-slate-600 hover:text-slate-900'
+                        : 'text-slate-600 hover:text-slate-900 bg-white/70'
                     }`}
                   >
-                    <div className="flex items-center gap-1.5">
+                    <div className="flex items-center gap-1">
                       <Sparkles className="w-3 h-3 text-purple-200" />
                       <span>Feedback Gemini</span>
                     </div>
-                    <span className="text-[9px] opacity-80">Verified Rules</span>
+                    <span className="text-[8px] opacity-80">Verified Rules</span>
                   </button>
 
                   <button
                     onClick={() => setSelectedDetector('gemini-standard')}
-                    className={`py-2 px-2 text-[11px] font-bold rounded-xl transition-all flex flex-col items-center justify-center gap-1 ${
+                    className={`py-2 px-2 text-[10px] font-bold rounded-xl transition-all flex flex-col items-center justify-center gap-1 ${
                       selectedDetector === 'gemini-standard'
                         ? 'bg-slate-700 text-white shadow-sm'
-                        : 'text-slate-600 hover:text-slate-900'
+                        : 'text-slate-600 hover:text-slate-900 bg-white/70'
                     }`}
                   >
-                    <div className="flex items-center gap-1.5">
+                    <div className="flex items-center gap-1">
                       <Eye className="w-3 h-3 text-slate-300" />
                       <span>Standard Gemini</span>
                     </div>
-                    <span className="text-[9px] opacity-80">Zero-Feedback</span>
+                    <span className="text-[8px] opacity-80">Zero-Feedback</span>
                   </button>
                 </div>
 
                 <p className="text-[10px] text-slate-500 mt-1 pl-1">
-                  {selectedDetector === 'yolov5' || selectedDetector === 'yolov8-nano'
-                    ? 'YOLOv5 Neural Detector: Trained on 4 classes: D00 (Longitudinal), D10 (Transverse), D20 (Alligator), D40 (Pothole).'
+                  {selectedDetector === 'roadguard-fusion'
+                    ? 'RoadGuard Multi-Model AI: Thorough multi-pass inspection fusing YOLO multi-scale sliced spatial localization with Gemini systematic road analysis and verified feedback rules.'
+                    : selectedDetector === 'yolov5' || selectedDetector === 'yolov8-nano'
+                    ? 'YOLOv5 Neural Sliced Detector: High-resolution tiled inference detecting all small, medium and large potholes (D40) and cracks (D00-D20).'
                     : selectedDetector === 'gemini-feedback'
                     ? 'Feedback-Guided Gemini Vision: Evaluates road features using verified reviewer rules to suppress false alarms.'
                     : 'Standard Gemini Vision: Baseline prompt without feedback rules for comparative false-positive analysis.'}
                 </p>
+              </div>
+
+              {/* Step 1B: Detection Target Focus */}
+              <div>
+                <label className="text-xs font-bold text-slate-700 block mb-1.5 flex items-center justify-between">
+                  <span className="flex items-center gap-1.5">
+                    <Eye className="w-3.5 h-3.5 text-blue-600" />
+                    <span>Inspection Target Scope:</span>
+                  </span>
+                  <span className="text-[10px] font-bold text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full">
+                    {detectionTarget === 'potholes' ? 'Potholes Only (High Precision)' : 'All Road Defects'}
+                  </span>
+                </label>
+
+                <div className="grid grid-cols-2 gap-1.5 bg-slate-100 p-1 rounded-xl">
+                  <button
+                    type="button"
+                    onClick={() => setDetectionTarget('potholes')}
+                    className={`py-1.5 px-2 text-[11px] font-bold rounded-lg transition-all flex items-center justify-center gap-1.5 ${
+                      detectionTarget === 'potholes'
+                        ? 'bg-blue-600 text-white shadow-sm'
+                        : 'text-slate-600 hover:text-slate-900 bg-white/70'
+                    }`}
+                  >
+                    <CheckCircle2 className={`w-3.5 h-3.5 ${detectionTarget === 'potholes' ? 'text-white' : 'text-slate-400'}`} />
+                    <span>Detect All Potholes Only</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setDetectionTarget('both')}
+                    className={`py-1.5 px-2 text-[11px] font-bold rounded-lg transition-all flex items-center justify-center gap-1.5 ${
+                      detectionTarget === 'both'
+                        ? 'bg-blue-600 text-white shadow-sm'
+                        : 'text-slate-600 hover:text-slate-900 bg-white/70'
+                    }`}
+                  >
+                    <AlertTriangle className={`w-3.5 h-3.5 ${detectionTarget === 'both' ? 'text-white' : 'text-slate-400'}`} />
+                    <span>All Hazards (Potholes + Cracks)</span>
+                  </button>
+                </div>
               </div>
 
               {/* Step 2: File Picker */}
@@ -516,6 +585,31 @@ export const ManualUploadModal: React.FC<ManualUploadModalProps> = ({
                       {analysisResult.latencyMs}ms • {analysisResult.modelUsed}
                     </span>
                   </div>
+
+                  {analysisResult.detected && (
+                    <div className="flex flex-wrap gap-2 pt-1 pb-1">
+                      <div className="px-2.5 py-1 rounded-xl bg-rose-100 text-rose-800 font-bold text-[11px] flex items-center gap-1.5 border border-rose-200">
+                        <span>Potholes (D40):</span>
+                        <span className="bg-rose-600 text-white px-1.5 py-0.2 rounded-full font-mono text-[10px]">
+                          {analysisResult.objects.filter((o) => o.type === 'pothole').length}
+                        </span>
+                      </div>
+
+                      <div className="px-2.5 py-1 rounded-xl bg-amber-100 text-amber-800 font-bold text-[11px] flex items-center gap-1.5 border border-amber-200">
+                        <span>Cracks (D00-D20):</span>
+                        <span className="bg-amber-600 text-white px-1.5 py-0.2 rounded-full font-mono text-[10px]">
+                          {analysisResult.objects.filter((o) => o.type === 'road_crack').length}
+                        </span>
+                      </div>
+
+                      <div className="px-2.5 py-1 rounded-xl bg-blue-100 text-blue-800 font-bold text-[11px] flex items-center gap-1.5 border border-blue-200">
+                        <span>Total Distinct Hazards:</span>
+                        <span className="bg-blue-600 text-white px-1.5 py-0.2 rounded-full font-mono text-[10px]">
+                          {analysisResult.objects.length}
+                        </span>
+                      </div>
+                    </div>
+                  )}
 
                   {analysisResult.objects.map((obj, i) => {
                     const damageClass =

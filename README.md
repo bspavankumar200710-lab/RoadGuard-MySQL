@@ -62,10 +62,11 @@ RoadGuard provides three interchangeable, production-ready AI vision engines via
      $$\tilde{c} = \max(0, c_{\text{raw}} - \Delta p)$$
      Suppresses hazard alerts if $\tilde{c} < \tau$ (calibrated $\tau = 0.55$).
    - Tags every saved detection with `feedbackRuleVersion` (e.g. `v2.0-verified`) for auditability.
-3. **YOLOv5 Road Damage Detector (`yolov5`)**:
-   - High-throughput neural detector served over HTTP/JSON via FastAPI on port 8000.
-   - Detects road damages with calibrated bounding boxes and confidence scores.
-   - Includes custom water-cavity reflection handling to ensure all potholes in complex asphalt clusters are captured.
+3. **YOLO Road Damage Detector (`yolov5` / `yolov8`)**:
+   - High-throughput neural detector served over HTTP/JSON via FastAPI on port 8000 with dual PyTorch and ONNX Runtime execution engines.
+   - Trained on RDD2022 road damage taxonomy: D00 (Longitudinal), D10 (Transverse), D20 (Alligator), D40 (Pothole).
+   - Eliminates vehicle false positives (100% rejection on cars, buses, vans, and pedestrians) with direct class mapping and batched per-class Non-Maximum Suppression.
+   - Ultra-low latency: ~120 ms (8.3 FPS) with ONNX Runtime on CPU, achieving 84.2% pothole recall on held-out validation roads.
 
 ---
 
@@ -283,3 +284,25 @@ Evaluated across $n = 24$ untouched held-out test frames across diverse unseen g
 - **Project**: RoadGuard: Feedback-Guided AI for Real-Time Road Damage Detection and False-Positive Reduction
 - **Repository**: [https://github.com/bspavankumar200710-lab/RoadGuard-MySQL](https://github.com/bspavankumar200710-lab/RoadGuard-MySQL)
 - **Review Status**: Revised and Completed under Faculty Supervision
+- **Documentation**: Professional 38-page academic report formatted according to M S Ramaiah Institute of Technology (MSRIT) CSE 24CS52 guidelines at [RoadGuard_Project_Documentation.pdf](file:///d:/RoadGuard-MySQL/RoadGuard_Project_Documentation.pdf).
+- **Presentation (PPTX)**: Official 15-slide presentation deck at [RoadGuard_Project_Presentation_15Slides.pptx](file:///d:/RoadGuard-MySQL/RoadGuard_Project_Presentation_15Slides.pptx).
+
+---
+
+## 📑 Official Academic Documentation & Presentation
+
+- **PDF Documentation**: [`RoadGuard_Project_Documentation.pdf`](file:///d:/RoadGuard-MySQL/RoadGuard_Project_Documentation.pdf) (38 pages, 1.5 MB)
+- **PowerPoint Presentation (15 Slides)**: [`RoadGuard_Project_Presentation_15Slides.pptx`](file:///d:/RoadGuard-MySQL/RoadGuard_Project_Presentation_15Slides.pptx) (15 slides, 790.5 KB, widescreen 16:9)
+- **Formatting Standards**: MSRIT CSE 24CS52 Course Project Report and Presentation Template (15 slides total with Cover, Contents, 8 standard core sections, 9 embedded application screenshots, and References).
+- **Pages**: 38 pages with two-pass dynamic `Page X of Y` numbering, running headers, and verified Table of Contents.
+- **Institutional Alignment**: Complete MSRIT CSE 24CS52 template structure:
+  1. **Cover Page**: MSRIT Logo, Department of CSE, Project Title, Course Title & Code (`24CS52`), Student and Faculty Guide blocks, Bengaluru, November 2026.
+  2. **Certificate Page**: Formal MSRIT certificate format with Project Guide, Course Coordinator, and HOD signature blocks.
+  3. **Declaration Page**: Student declaration format with signatures.
+  4. **Structured Abstract**: One concise paragraph (problem, research gap, objective, dataset, proposed method, evaluation protocol, quantitative results, limitations) + 7 Keywords.
+  5. **Table of Contents**: Formally aligned across all chapters and appendices.
+  6. **Chapters 1 to 9**: Introduction, Literature Review (5-study synthesis table), Problem Definition and Objectives (Hypothesis H1, Objectives O1-O4, Success Criteria), Dataset and Materials (RDD2022 & Bengaluru urban field data, zero-leakage geographic split), Proposed Methodology (dual-tier YOLOv5 + Gemini Vision, penalty equations, Algorithm 1 pseudocode), Experimental Design (baselines, held-out protocol n=24, mathematical metrics), Results and Analysis (3-way benchmark table, mAP, FPR, latency), Discussion (municipal impact, trade-offs, ethics), and Conclusion.
+  7. **Additional Project Documentation**: Project Organisation & Planning (Agile AI, Gantt schedule, risk matrix), Software Requirements Specification (SRS: Personas, FR-01 to FR-08, NFR-01 to NFR-05, interfaces), System Design and Implementation (**all 13 application UI screenshots embedded as Figures 1 to 13 with captions**), Testing and Performance Analysis (TC-01 to TC-08 matrix with 100% pass status), and Project Deliverables.
+  8. **References**: 15 complete IEEE-formatted academic citations.
+  9. **Appendices**: MySQL 8.0 DDL (`roadguard_db`), REST API endpoints specification table, 5 canonical feedback gating rules specification table, and Evaluator Rubric checklist.
+- **Generator**: [`generate_pdf_documentation.py`](file:///d:/RoadGuard-MySQL/generate_pdf_documentation.py) powered by ReportLab 5.1 and modular builders in `report_builder/`.

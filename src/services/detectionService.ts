@@ -6,6 +6,7 @@ import {
   HazardType,
   VerificationStatusType,
   ImageSourceType,
+  AIEngineType,
 } from '../types/detection';
 import { indexedDBService } from './indexedDBService';
 import { agentLearningService } from './agentLearningService';
@@ -223,7 +224,7 @@ class DetectionService {
       damageName?: string;
       annotatedImageUrl?: string;
       imageSource?: ImageSourceType;
-      aiEngine?: 'yolov5' | 'gemini-feedback' | 'gemini-standard' | 'yolov8-nano' | 'gemini-vision';
+      aiEngine?: AIEngineType;
       verificationStatus?: VerificationStatusType;
     }
   ): Promise<RoadHazardRecord> {

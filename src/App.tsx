@@ -8,6 +8,7 @@ import { MonitorPage } from './pages/MonitorPage';
 import { MapPage } from './pages/MapPage';
 import { HistoryPage } from './pages/HistoryPage';
 import { EvaluationPage } from './pages/EvaluationPage';
+import { AutomatedScannerPage } from './pages/AutomatedScannerPage';
 import { DemoModeModal } from './components/DemoModeModal';
 import { UserAuthButton } from './components/UserAuthButton';
 import { AuthGateModal } from './components/AuthGateModal';
@@ -119,6 +120,8 @@ export default function App() {
         return 'Hazard Map';
       case 'history':
         return 'Defect Records & Review';
+      case 'scanner':
+        return 'Automated Location Scanner';
       case 'evaluation':
         return 'Research Evaluation & Baselines';
       default:
@@ -356,6 +359,22 @@ export default function App() {
                   <HistoryPage
                     detections={detections}
                     onOpenDemo={() => setIsDemoModalOpen(true)}
+                  />
+                </motion.div>
+              )}
+
+              {currentTab === 'scanner' && (
+                <motion.div
+                  key="scanner"
+                  variants={pageVariants}
+                  initial="initial"
+                  animate="animate"
+                  exit="exit"
+                  className="w-full flex-1 flex flex-col bg-slate-50"
+                >
+                  <AutomatedScannerPage
+                    onNavigateToMap={handleNavigateToMap}
+                    onNavigateToHistory={handleNavigateToHistory}
                   />
                 </motion.div>
               )}

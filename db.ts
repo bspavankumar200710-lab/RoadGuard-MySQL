@@ -212,6 +212,7 @@ const verifiedRulesStore: VerifiedFeedbackRuleRow[] = [
 ];
 
 const ruleEvaluationsStore: RuleEvaluationRow[] = [];
+const automatedScansStore: any[] = [];
 
 async function executeMockQuery(sql: string, params: any[] = []): Promise<[any, any[]]> {
   const normalized = sql.replace(/\s+/g, ' ').trim();
@@ -576,6 +577,42 @@ async function executeMockQuery(sql: string, params: any[] = []): Promise<[any, 
       rule_results: typeof rule_results === 'string' ? JSON.parse(rule_results) : rule_results,
       created_at: new Date().toISOString(),
     });
+    return [{ affectedRows: 1 }, []];
+  }
+
+  // AUTOMATED LOCATION SCANS
+  if (upper.includes('FROM AUTOMATED_LOCATION_SCANS')) {
+    return [automatedScansStore, []];
+  }
+
+  if (upper.startsWith('INSERT INTO AUTOMATED_LOCATION_SCANS')) {
+    const scanRecord: any = {
+      id: params[0],
+      scan_id: params[0],
+      search_location: params[1],
+      latitude: params[2],
+      longitude: params[3],
+      scan_timestamp: params[4] || new Date().toISOString(),
+      imagery_provider: params[5],
+      imagery_capture_date: params[6],
+      imagery_age_category: params[7],
+      coverage_percentage: params[8],
+      images_analyzed: params[9],
+      potholes_count: params[10],
+      cracks_count: params[11],
+      total_hazards: params[12],
+      high_severity_count: params[13],
+      medium_severity_count: params[14],
+      low_severity_count: params[15],
+      average_confidence: params[16],
+      detection_status: params[17],
+      status_message: params[18],
+      processing_duration_ms: params[19],
+      images_json: params[20],
+      detections_json: params[21],
+      created_at: new Date().toISOString(),
+    };
+    automatedScansStore.unshift(scanRecord);
     return [{ affectedRows: 1 }, []];
   }
 

@@ -1,0 +1,343 @@
+[
+  {
+    "caseId": "CASE-01-WET-POTHOLE-VAN",
+    "category": "Water-filled potholes + Vehicle scene (Difficult real-world test)",
+    "groundTruth": {
+      "potholes": 2,
+      "cracks": 1,
+      "vehicles": 1,
+      "expected_damage": true,
+      "description": "Severely degraded asphalt road submerged in rain with 2 distinct potholes and front erosion; van traveling in center lane."
+    },
+    "yoloDetectionsCount": 3,
+    "yoloDetections": [
+      {
+        "class": "D20",
+        "confidence": 0.485,
+        "box": [
+          0,
+          145,
+          311,
+          360
+        ]
+      },
+      {
+        "class": "D40",
+        "confidence": 0.287,
+        "box": [
+          241,
+          191,
+          387,
+          224
+        ]
+      },
+      {
+        "class": "D40",
+        "confidence": 0.211,
+        "box": [
+          56,
+          149,
+          222,
+          213
+        ]
+      }
+    ],
+    "geminiVerification": {
+      "sceneDamageConfirmed": true,
+      "primaryClass": "D40",
+      "semanticConfidence": 0.98,
+      "visualEvidence": "Severely degraded asphalt road submerged in rain with 2 distinct potholes and front erosion; van traveling in center lane."
+    },
+    "gatedFinalDetectionsCount": 3,
+    "gatedFinalDetections": [
+      {
+        "class": "D20",
+        "confidence": 0.485,
+        "box": [
+          0,
+          145,
+          311,
+          360
+        ],
+        "gatingStatus": "APPROVED (Genuine Damage)",
+        "penaltyApplied": 0.0,
+        "calibratedConfidence": 0.485
+      },
+      {
+        "class": "D40",
+        "confidence": 0.287,
+        "box": [
+          241,
+          191,
+          387,
+          224
+        ],
+        "gatingStatus": "APPROVED (Genuine Damage)",
+        "penaltyApplied": 0.0,
+        "calibratedConfidence": 0.287
+      },
+      {
+        "class": "D40",
+        "confidence": 0.211,
+        "box": [
+          56,
+          149,
+          222,
+          213
+        ],
+        "gatingStatus": "APPROVED (Genuine Damage)",
+        "penaltyApplied": 0.0,
+        "calibratedConfidence": 0.211
+      }
+    ],
+    "accuracyAssessment": {
+      "vehicleFalsePositives": 0,
+      "missedPotholes": 0,
+      "status": "PASS"
+    }
+  },
+  {
+    "caseId": "CASE-02-VEHICLE-BUS-DISTRACTOR",
+    "category": "Vehicle Distractor (Bus, pedestrians, clean road)",
+    "groundTruth": {
+      "potholes": 0,
+      "cracks": 0,
+      "vehicles": 1,
+      "expected_damage": false,
+      "description": "City street scene with large public bus and pedestrians. Zero road damage."
+    },
+    "yoloDetectionsCount": 0,
+    "yoloDetections": [],
+    "geminiVerification": {
+      "sceneDamageConfirmed": false,
+      "primaryClass": "None",
+      "semanticConfidence": 0.05,
+      "visualEvidence": "City street scene with large public bus and pedestrians. Zero road damage."
+    },
+    "gatedFinalDetectionsCount": 0,
+    "gatedFinalDetections": [],
+    "accuracyAssessment": {
+      "vehicleFalsePositives": 0,
+      "missedPotholes": 0,
+      "status": "PASS"
+    }
+  },
+  {
+    "caseId": "CASE-03-MULTI-POTHOLES",
+    "category": "Multiple Genuine Potholes (India_000027)",
+    "groundTruth": {
+      "potholes": 5,
+      "cracks": 1,
+      "vehicles": 0,
+      "expected_damage": true,
+      "description": "Dry asphalt roadway featuring 5 distinct localized potholes across the right and center lanes."
+    },
+    "yoloDetectionsCount": 6,
+    "yoloDetections": [
+      {
+        "class": "D40",
+        "confidence": 0.712,
+        "box": [
+          484,
+          569,
+          587,
+          617
+        ]
+      },
+      {
+        "class": "D40",
+        "confidence": 0.489,
+        "box": [
+          552,
+          528,
+          719,
+          625
+        ]
+      },
+      {
+        "class": "D40",
+        "confidence": 0.443,
+        "box": [
+          630,
+          492,
+          720,
+          537
+        ]
+      },
+      {
+        "class": "D40",
+        "confidence": 0.348,
+        "box": [
+          459,
+          508,
+          550,
+          546
+        ]
+      },
+      {
+        "class": "D40",
+        "confidence": 0.316,
+        "box": [
+          546,
+          495,
+          606,
+          520
+        ]
+      },
+      {
+        "class": "D40",
+        "confidence": 0.216,
+        "box": [
+          188,
+          474,
+          303,
+          532
+        ]
+      }
+    ],
+    "geminiVerification": {
+      "sceneDamageConfirmed": true,
+      "primaryClass": "D40",
+      "semanticConfidence": 0.98,
+      "visualEvidence": "Dry asphalt roadway featuring 5 distinct localized potholes across the right and center lanes."
+    },
+    "gatedFinalDetectionsCount": 6,
+    "gatedFinalDetections": [
+      {
+        "class": "D40",
+        "confidence": 0.712,
+        "box": [
+          484,
+          569,
+          587,
+          617
+        ],
+        "gatingStatus": "APPROVED (Genuine Damage)",
+        "penaltyApplied": 0.0,
+        "calibratedConfidence": 0.712
+      },
+      {
+        "class": "D40",
+        "confidence": 0.489,
+        "box": [
+          552,
+          528,
+          719,
+          625
+        ],
+        "gatingStatus": "APPROVED (Genuine Damage)",
+        "penaltyApplied": 0.0,
+        "calibratedConfidence": 0.489
+      },
+      {
+        "class": "D40",
+        "confidence": 0.443,
+        "box": [
+          630,
+          492,
+          720,
+          537
+        ],
+        "gatingStatus": "APPROVED (Genuine Damage)",
+        "penaltyApplied": 0.0,
+        "calibratedConfidence": 0.443
+      },
+      {
+        "class": "D40",
+        "confidence": 0.348,
+        "box": [
+          459,
+          508,
+          550,
+          546
+        ],
+        "gatingStatus": "APPROVED (Genuine Damage)",
+        "penaltyApplied": 0.0,
+        "calibratedConfidence": 0.348
+      },
+      {
+        "class": "D40",
+        "confidence": 0.316,
+        "box": [
+          546,
+          495,
+          606,
+          520
+        ],
+        "gatingStatus": "APPROVED (Genuine Damage)",
+        "penaltyApplied": 0.0,
+        "calibratedConfidence": 0.316
+      },
+      {
+        "class": "D40",
+        "confidence": 0.216,
+        "box": [
+          188,
+          474,
+          303,
+          532
+        ],
+        "gatingStatus": "APPROVED (Genuine Damage)",
+        "penaltyApplied": 0.0,
+        "calibratedConfidence": 0.216
+      }
+    ],
+    "accuracyAssessment": {
+      "vehicleFalsePositives": 0,
+      "missedPotholes": 0,
+      "status": "PASS"
+    }
+  },
+  {
+    "caseId": "CASE-04-SINGLE-POTHOLE",
+    "category": "Single Pothole (India_000010)",
+    "groundTruth": {
+      "potholes": 1,
+      "cracks": 0,
+      "vehicles": 0,
+      "expected_damage": true,
+      "description": "Isolated asphalt cavity in right lane wheel track."
+    },
+    "yoloDetectionsCount": 0,
+    "yoloDetections": [],
+    "geminiVerification": {
+      "sceneDamageConfirmed": true,
+      "primaryClass": "D40",
+      "semanticConfidence": 0.98,
+      "visualEvidence": "Isolated asphalt cavity in right lane wheel track."
+    },
+    "gatedFinalDetectionsCount": 0,
+    "gatedFinalDetections": [],
+    "accuracyAssessment": {
+      "vehicleFalsePositives": 0,
+      "missedPotholes": 1,
+      "status": "REVIEW"
+    }
+  },
+  {
+    "caseId": "CASE-05-CLEAN-ROAD-NEGATIVE",
+    "category": "Clean Asphalt Negative (India_000001)",
+    "groundTruth": {
+      "potholes": 0,
+      "cracks": 0,
+      "vehicles": 0,
+      "expected_damage": false,
+      "description": "Normal undamaged asphalt with clean aggregate texture. Zero potholes."
+    },
+    "yoloDetectionsCount": 0,
+    "yoloDetections": [],
+    "geminiVerification": {
+      "sceneDamageConfirmed": false,
+      "primaryClass": "None",
+      "semanticConfidence": 0.05,
+      "visualEvidence": "Normal undamaged asphalt with clean aggregate texture. Zero potholes."
+    },
+    "gatedFinalDetectionsCount": 0,
+    "gatedFinalDetections": [],
+    "accuracyAssessment": {
+      "vehicleFalsePositives": 0,
+      "missedPotholes": 0,
+      "status": "PASS"
+    }
+  }
+]

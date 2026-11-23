@@ -1,0 +1,200 @@
+[
+  {
+    "caseId": "CASE-01-WET-POTHOLES-VAN",
+    "name": "Difficult Wet Roadway with Multiple Potholes & Moving Van",
+    "imageSize": "480x360",
+    "groundTruthPotholes": 2,
+    "groundTruthTotalDamage": 4,
+    "yoloDetectedPotholes": 2,
+    "yoloDetectedCracks": 2,
+    "yoloTotalDetections": 4,
+    "geminiSceneConfirmation": true,
+    "feedbackRejectedCount": 0,
+    "finalApprovedPotholes": 2,
+    "finalApprovedTotalDamage": 4,
+    "missedPotholes": 0,
+    "vehicleFalsePositives": 0,
+    "inferenceLatencyMs": 6894,
+    "status": "PASS",
+    "detections": [
+      {
+        "class": "D20-AlligatorCrack",
+        "confidence": 0.582,
+        "box": [
+          1,
+          184,
+          314,
+          360
+        ]
+      },
+      {
+        "class": "D20-AlligatorCrack",
+        "confidence": 0.24255703389644623,
+        "box": [
+          96,
+          162,
+          287,
+          252
+        ]
+      },
+      {
+        "class": "D40-Pothole",
+        "confidence": 0.261,
+        "box": [
+          56,
+          149,
+          222,
+          213
+        ]
+      },
+      {
+        "class": "D40-Pothole",
+        "confidence": 0.293,
+        "box": [
+          237,
+          189,
+          401,
+          228
+        ]
+      }
+    ]
+  },
+  {
+    "caseId": "CASE-02-BUS-VEHICLE-DISTRACTOR",
+    "name": "City Street with Public Transit Bus & Pedestrians (Zero Road Damage)",
+    "imageSize": "810x1080",
+    "groundTruthPotholes": 0,
+    "groundTruthTotalDamage": 0,
+    "yoloDetectedPotholes": 0,
+    "yoloDetectedCracks": 0,
+    "yoloTotalDetections": 0,
+    "geminiSceneConfirmation": false,
+    "feedbackRejectedCount": 0,
+    "finalApprovedPotholes": 0,
+    "finalApprovedTotalDamage": 0,
+    "missedPotholes": 0,
+    "vehicleFalsePositives": 0,
+    "inferenceLatencyMs": 1736,
+    "status": "PASS",
+    "detections": []
+  },
+  {
+    "caseId": "CASE-03-MULTI-POTHOLES-CLUSTER",
+    "name": "Dry Highway Corridor with 8 Distinct Potholes (India_000027)",
+    "imageSize": "720x720",
+    "groundTruthPotholes": 8,
+    "groundTruthTotalDamage": 8,
+    "yoloDetectedPotholes": 8,
+    "yoloDetectedCracks": 0,
+    "yoloTotalDetections": 8,
+    "geminiSceneConfirmation": true,
+    "feedbackRejectedCount": 0,
+    "finalApprovedPotholes": 8,
+    "finalApprovedTotalDamage": 8,
+    "missedPotholes": 0,
+    "vehicleFalsePositives": 0,
+    "inferenceLatencyMs": 1150,
+    "status": "PASS",
+    "detections": [
+      {
+        "class": "D40-Pothole",
+        "confidence": 0.868,
+        "box": [
+          485,
+          569,
+          587,
+          617
+        ]
+      },
+      {
+        "class": "D40-Pothole",
+        "confidence": 0.66,
+        "box": [
+          545,
+          529,
+          719,
+          625
+        ]
+      },
+      {
+        "class": "D40-Pothole",
+        "confidence": 0.593,
+        "box": [
+          630,
+          492,
+          720,
+          537
+        ]
+      },
+      {
+        "class": "D40-Pothole",
+        "confidence": 0.501,
+        "box": [
+          456,
+          508,
+          550,
+          547
+        ]
+      },
+      {
+        "class": "D40-Pothole",
+        "confidence": 0.425,
+        "box": [
+          546,
+          495,
+          606,
+          520
+        ]
+      },
+      {
+        "class": "D40-Pothole",
+        "confidence": 0.2487899512052536,
+        "box": [
+          358,
+          406,
+          395,
+          423
+        ]
+      },
+      {
+        "class": "D40-Pothole",
+        "confidence": 0.368,
+        "box": [
+          188,
+          474,
+          302,
+          530
+        ]
+      },
+      {
+        "class": "D40-Pothole",
+        "confidence": 0.17940184473991394,
+        "box": [
+          376,
+          464,
+          412,
+          486
+        ]
+      }
+    ]
+  },
+  {
+    "caseId": "CASE-04-CLEAN-ROAD-NEGATIVE",
+    "name": "Clean Normal Asphalt Road Surface (India_000001)",
+    "imageSize": "720x720",
+    "groundTruthPotholes": 0,
+    "groundTruthTotalDamage": 0,
+    "yoloDetectedPotholes": 0,
+    "yoloDetectedCracks": 0,
+    "yoloTotalDetections": 0,
+    "geminiSceneConfirmation": false,
+    "feedbackRejectedCount": 0,
+    "finalApprovedPotholes": 0,
+    "finalApprovedTotalDamage": 0,
+    "missedPotholes": 0,
+    "vehicleFalsePositives": 0,
+    "inferenceLatencyMs": 865,
+    "status": "PASS",
+    "detections": []
+  }
+]

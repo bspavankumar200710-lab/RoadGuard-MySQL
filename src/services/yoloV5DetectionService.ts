@@ -39,11 +39,11 @@ export class YOLOv5DetectionService implements IAIDetectionService {
   public readonly name = 'YOLOv5 Road Damage Detector (FastAPI)';
   public readonly version = 'v5.0-RDD2022';
 
-  private serviceUrl = '/api/yolov5'; // Proxied through Express to avoid CORS, or direct
+  private serviceUrl = typeof window !== 'undefined' ? '/api/yolov5' : 'http://127.0.0.1:8000';
   private directUrl = 'http://127.0.0.1:8000';
   private status: 'idle' | 'checking' | 'ready' | 'offline' = 'idle';
   private isChecking = false;
-  private confidenceThreshold = 0.20;
+  private confidenceThreshold = 0.15;
   private iouThreshold = 0.45;
 
   private frameCount = 0;
@@ -144,7 +144,7 @@ export class YOLOv5DetectionService implements IAIDetectionService {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           imageBase64: base64Data,
-          confidence: this.confidenceThreshold,
+          confidence: mode === 'potholes' ? 0.035 : this.confidenceThreshold,
           iou: this.iouThreshold,
           mode,
         }),
@@ -168,6 +168,8 @@ export class YOLOv5DetectionService implements IAIDetectionService {
         severity: (o.severity || 'medium') as SeverityLevel,
         description: o.description || `[${o.classCode || 'D40'} - ${o.className || 'Pothole'}] Road defect detected`,
         box2d: o.box2d as [number, number, number, number],
+        damageClass: o.classCode || (o.type === 'pothole' ? 'D40' : 'D20'),
+        visualEvidence: o.description,
       }));
 
       return {

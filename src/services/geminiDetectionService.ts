@@ -53,8 +53,9 @@ export class GeminiDetectionService implements IAIDetectionService {
       ? agentLearningService.getLearnedPromptDirectives()
       : '';
 
+    const apiEndpoint = typeof window !== 'undefined' ? '/api/detect' : 'http://127.0.0.1:3000/api/detect';
     try {
-      const response = await fetch('/api/detect', {
+      const response = await fetch(apiEndpoint, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

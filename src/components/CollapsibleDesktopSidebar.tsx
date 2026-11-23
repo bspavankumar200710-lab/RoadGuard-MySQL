@@ -14,6 +14,7 @@ import {
   Database,
   Radio,
   FlaskConical,
+  ScanSearch,
 } from 'lucide-react';
 import { NavigationTab } from './Navigation';
 import { springs, buttonPressProps, sidebarTransition, sidebarLabelVariants } from '../utils/motion';
@@ -43,6 +44,7 @@ export const CollapsibleDesktopSidebar: React.FC<CollapsibleDesktopSidebarProps>
 }) => {
   const navItems = [
     { id: 'dashboard' as const, label: 'Dashboard', icon: LayoutDashboard },
+    { id: 'scanner' as const, label: 'Automated Scanner', icon: ScanSearch, isNew: true },
     { id: 'monitor' as const, label: 'Camera Monitor', icon: Camera, live: isMonitoring },
     { id: 'map' as const, label: 'Hazard Map', icon: MapPin },
     { id: 'history' as const, label: 'Detection History', icon: History, count: unreadCount },
@@ -134,6 +136,12 @@ export const CollapsibleDesktopSidebar: React.FC<CollapsibleDesktopSidebarProps>
                     {item.live && (
                       <span className="text-[9px] bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-1.5 py-0.5 rounded font-mono animate-pulse">
                         LIVE
+                      </span>
+                    )}
+
+                    {(item as any).isNew && (
+                      <span className="text-[9px] bg-blue-500/20 text-cyan-300 border border-blue-400/30 px-1.5 py-0.5 rounded font-mono font-bold">
+                        PHASE 2
                       </span>
                     )}
 

@@ -13,10 +13,11 @@ import {
   Database,
   Zap,
   FlaskConical,
+  ScanSearch,
 } from 'lucide-react';
 import { springs, modalOverlayVariants, buttonPressProps, leftDrawerVariants } from '../utils/motion';
 
-export type NavigationTab = 'dashboard' | 'monitor' | 'map' | 'history' | 'evaluation';
+export type NavigationTab = 'dashboard' | 'scanner' | 'monitor' | 'map' | 'history' | 'evaluation';
 
 interface NavigationProps {
   currentTab: NavigationTab;
@@ -219,6 +220,7 @@ export const MobileSidebarDrawer: React.FC<MobileSidebarDrawerProps> = ({
             <div className="flex-1 p-3 space-y-1 overflow-y-auto">
               {[
                 { id: 'dashboard' as const, label: 'Dashboard', icon: LayoutDashboard },
+                { id: 'scanner' as const, label: 'Automated Location Scanner', icon: ScanSearch, isNew: true },
                 { id: 'monitor' as const, label: 'Live Camera Monitor', icon: Camera, live: isMonitoring },
                 { id: 'map' as const, label: 'Hazard Map', icon: MapPin },
                 { id: 'history' as const, label: 'Detection History', icon: History, count: unreadCount },
